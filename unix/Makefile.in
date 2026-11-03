@@ -83,6 +83,14 @@ test: Makefile libmk4$(LIBEXT) regress
 	./regress
 	diff --exclude=.svn $(srcdir)/../tests/ok tests
 
+# Needs several GB of disk and RAM and takes a while, so not part of "test".
+# Example: make test-large LARGE_ARGS="6 512 --expect-all"
+LARGE_ARGS = 6 512
+
+test-large: Makefile libmk4$(LIBEXT) tlarge
+	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tlarge tlarge.mk $(LARGE_ARGS)
+	rm -f tlarge.mk
+
 test-tcl: tcl
 	cd $(srcdir)/../tcl/test && $(tclsh) all.tcl
 
@@ -113,7 +121,7 @@ install-python: Mk4py$(LIBEXT)
 
 clean:
 	rm -f *$(LIBEXT) *.o
-	rm -f $(DEMOS) struct regress myfile.dat secret.dat
+	rm -f $(DEMOS) struct regress tlarge tlarge.mk myfile.dat secret.dat
 	rm -rf tests/[a-z]*
 
 distclean: clean
@@ -170,6 +178,10 @@ struct: $(srcdir)/../demos/struct.cpp
 
 regress: $(TSTOBJS) libmk4$(LIBEXT)
 	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) $(TSTOBJS) libmk4$(LIBEXT) @LIBS@
+
+tlarge: $(srcdir)/../tests/tlarge.cpp libmk4$(LIBEXT)
+	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
+		$(srcdir)/../tests/tlarge.cpp libmk4$(LIBEXT) @LIBS@
 
 #---------- Dependencies
 

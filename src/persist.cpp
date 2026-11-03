@@ -99,6 +99,7 @@ class c4_Allocator: public c4_DWordArray {
     c4_Allocator();
 
     void Initialize(t4_i32 first_ = 1);
+    void Assign(const c4_Allocator &other_);
 
     t4_i32 AllocationLimit()const;
 
@@ -157,20 +158,29 @@ void c4_Allocator::Initialize(t4_i32 first_) {
   Add(kMaxInt); // ... there is no limit on file size
 }
 
+void c4_Allocator::Assign(const c4_Allocator &other_) {
+  // plain element copy, the base class has no safe copy constructor
+  SetSize(other_.GetSize());
+  for (int i = 0; i < other_.GetSize(); ++i)
+    SetAt(i, other_.GetAt(i));
+}
+
 t4_i32 c4_Allocator::Allocate(t4_i32 len_) {
   // zero arg is ok, it simply returns first allocatable position   
+  // the free ranges are [GetAt(i), GetAt(i+1)), compare using the size of
+  // the range, since "start + len_" could overflow the 32-bit range
   for (int i = 2; i < GetSize(); i += 2)
-  if (GetAt(i + 1) >= GetAt(i) + len_) {
+  if (GetAt(i + 1) - GetAt(i) >= len_) {
     t4_i32 pos = GetAt(i);
-    if ((t4_i32)GetAt(i + 1) > pos + len_)
+    if (GetAt(i + 1) - pos > len_)
       ElementAt(i) += len_;
     else
       RemoveAt(i, 2);
     return pos;
   }
 
-  d4_assert(0);
-  return 0; // not reached
+  // there is no room left, i.e. the file would exceed what can be addressed
+  return  - 1;
 }
 
 void c4_Allocator::Occupy(t4_i32 pos_, t4_i32 len_) {
@@ -597,6 +607,15 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   //AllocDump("a1", false);
   //AllocDump("a2", true);
 
+  // The first pass allocates from the space of the previous commit, which
+  // lives on in the c4_Persist object in mode 1. Keep a copy, so a commit
+  // which fails before anything was written leaves that state untouched.
+  // Without this, the next commit would start from a damaged free list.
+  c4_Allocator spaceBackup;
+  const bool restorable = _differ == 0 && _space != _nextSpace;
+  if (restorable)
+    spaceBackup.Assign(*_space);
+
   // first pass allocates columns and constructs shallow walks
   c4_Column walk(root_.Persist());
   SetWalkBuffer(&walk);
@@ -604,17 +623,22 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   SetWalkBuffer(0);
   CommitColumn(walk);
 
-  c4_Bytes tempWalk;
-  walk.FetchBytes(0, walk.ColSize(), tempWalk, true);
-
   t4_i32 limit = _nextSpace->AllocationLimit();
-  d4_assert(limit >= 8 || _differ != 0);
+  d4_assert(limit >= 8 || _differ != 0 || _strategy._failure != 0);
 
-  if (limit < 0) {
-    // 2006-01-12 #2: catch file size exceeding 2 Gb
-    _strategy._failure =  - 1; // unusual non-zero value flags this case
+  // 2006-01-12 #2: catch file size exceeding 2 Gb, which is flagged either
+  // by the allocator running out of room or by the limit leaving the range
+  // in which the 8-byte file marks (and the arithmetic below) are safe
+  if (_strategy._failure != 0 || limit < 0 || limit > 0x7fffffff - 64) {
+    if (_strategy._failure == 0)
+      _strategy._failure =  - 1; // unusual non-zero value flags this case
+    if (restorable)
+      _space->Assign(spaceBackup);
     return ;
   }
+
+  c4_Bytes tempWalk;
+  walk.FetchBytes(0, walk.ColSize(), tempWalk, true);
 
   bool changed = _fullScan || tempWalk != rootWalk_;
 
@@ -789,6 +813,10 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 }
 
 bool c4_SaveContext::CommitColumn(c4_Column &col_) {
+  // once the first pass has failed, nothing more can be allocated
+  if (_preflight && _strategy._failure != 0)
+    return false;
+
   bool changed = col_.IsDirty() || _fullScan;
 
   t4_i32 sz = col_.ColSize();
@@ -805,8 +833,14 @@ bool c4_SaveContext::CommitColumn(c4_Column &col_) {
         pos = ~n;
       }
     } else if (_preflight) {
-      if (changed)
+      if (changed) {
         pos = _space->Allocate(sz);
+        if (pos < 0) {
+          // out of address space, the commit will be refused by SaveIt
+          _strategy._failure =  - 1;
+          return changed;
+        }
+      }
 
       _nextSpace->Occupy(pos, sz);
       _newPositions.Add(pos);
@@ -936,6 +970,11 @@ bool c4_Persist::Commit(bool full_) {
 }
 
 bool c4_Persist::Rollback(bool full_) {
+  // like Commit, start with a clean slate: a stale failure code left by an
+  // earlier failed commit would make LoadAll() skip loading and yield an
+  // empty database
+  _strategy._failure = 0;
+
   _root->DetachFromParent();
   _root->DetachFromStorage(true);
   _root = 0;
