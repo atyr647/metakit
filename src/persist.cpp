@@ -17,6 +17,7 @@
 // The datafile size above which wide marks are used, see marks.h.  The
 // default leaves room for the tails below the largest 31-bit position.
 t4_fpos f4_WideAbove = 0x7fffffff - 64;
+t4_fpos f4_MaxFileEnd = f4_kMaxWideEnd;
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -747,7 +748,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   // is flagged either by the allocator running out of room or by the limit
   // leaving the range in which the file marks (and the arithmetic below) are
   // safe.  The length of the root must fit in 24 bits, which is a limit too.
-  if (_strategy._failure != 0 || limit < 0 || limit > f4_kMaxWideEnd ||
+  if (_strategy._failure != 0 || limit < 0 || limit > f4_MaxFileEnd ||
     (_differ == 0 && walk.ColSize() > 0xFFFFFF)) {
     if (_strategy._failure == 0)
       _strategy._failure =  - 1; // unusual non-zero value flags this case

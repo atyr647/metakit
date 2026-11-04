@@ -66,6 +66,10 @@ enum {
 // and those over it use wide marks.  This is a variable only for testing.
 extern t4_fpos f4_WideAbove;
 
+// A commit which needs the datafile to end beyond this position fails.  Also
+// a variable only for testing, this is how a failed commit is made to happen.
+extern t4_fpos f4_MaxFileEnd;
+
 /////////////////////////////////////////////////////////////////////////////
 
 // store the low 32 bits of a value

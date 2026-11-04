@@ -17,8 +17,11 @@
 
 // the hook which sets the size above which wide marks are used
 extern t4_fpos f4_WideAbove;
+// and the one which sets the size of datafile which commits cannot exceed
+extern t4_fpos f4_MaxFileEnd;
 
 static const t4_fpos kStdLimit = 0x7fffffff - 64; // the default
+static const t4_fpos kMaxEndDefault = f4_MaxFileEnd; // what the library has
 static int sFailures = 0;
 static int sChecks = 0;
 
@@ -122,6 +125,185 @@ static bool ReadFile(const char *fn_, c4_Bytes &data_) {
 
 static t4_fpos Get32(const t4_byte *p_) {
   return ((t4_fpos)p_[0] << 24) + (p_[1] << 16) + (p_[2] << 8) + p_[3];
+}
+
+static bool SameBytes(const c4_Bytes &a_, const c4_Bytes &b_) {
+  return a_.Size() == b_.Size() && memcmp(a_.Contents(), b_.Contents(),
+    a_.Size()) == 0;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 0. A commit which fails must leave no trace, in the datafile or in the
+//    state of the storage: later commits must come out exactly as if the
+//    failed one had never been tried.
+
+static void SmallChange(c4_View v_) {
+  c4_IntProp pi("i");
+  c4_StringProp ps("s");
+  if (v_.GetSize() > 3) {
+    pi(v_[2]) = 5555;
+    ps(v_[3]) = "small change";
+  }
+}
+
+static void TestFailedCommit(int mode_, bool wide_) {
+  printf("failed commit, mode %d, %s marks\n", mode_, wide_ ? "wide":
+    "standard");
+
+  const char *fnFail = "twide_fail.mk";
+  const char *fnCtrl = "twide_ctrl.mk";
+  remove(fnFail);
+  remove(fnCtrl);
+  f4_WideAbove = wide_ ? 0 : kStdLimit;
+
+  // the control: the same commits without the one which fails
+  {
+    c4_Storage s(fnCtrl, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    Mutate(v, 1, 0);
+    CHECK(s.Commit());
+    SmallChange(v);
+    CHECK(s.Commit());
+    Mutate(v, 2, 0);
+    CHECK(s.Commit());
+    SmallChange(v);
+    Mutate(v, 3, 2);
+    CHECK(s.Commit());
+  }
+  c4_Bytes ctrl;
+  CHECK(ReadFile(fnCtrl, ctrl));
+
+  {
+    c4_Storage s(fnFail, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    Mutate(v, 1, 0);
+    CHECK(s.Commit());
+    const long sig1 = LiveSignature(v);
+
+    c4_Bytes before;
+    CHECK(ReadFile(fnFail, before));
+
+    // From here on, the datafile may not grow much, which a lot of new data
+    // will make it do.  The commit must fail, whichever way it is retried.
+    f4_MaxFileEnd = before.Size() + 20000;
+
+    Mutate(v, 2, 0);
+    const long sigBig = LiveSignature(v);
+    for (int attempt = 0; attempt < 3; ++attempt) {
+      CHECK(!s.Commit());
+
+      // nothing was written, and nothing was lost from memory either
+      c4_Bytes now;
+      CHECK(ReadFile(fnFail, now));
+      CHECK(SameBytes(before, now));
+      CHECK(LiveSignature(v) == sigBig);
+      CHECK(Signature(fnFail) == sig1);
+    }
+
+    // rolling back the failed changes gives the last committed state
+    CHECK(s.Rollback());
+    v = s.View("a");
+    CHECK(LiveSignature(v) == sig1);
+
+    // and committing something smaller works, the free space must be right
+    SmallChange(v);
+    CHECK(s.Commit());
+    CHECK(Signature(fnFail) == LiveSignature(v));
+
+    f4_MaxFileEnd = kMaxEndDefault;
+
+    // now the same commits as in the control, which must give the same file
+    Mutate(v, 2, 0);
+    CHECK(s.Commit());
+    CHECK(Signature(fnFail) == LiveSignature(v));
+    SmallChange(v);
+    Mutate(v, 3, 2);
+    CHECK(s.Commit());
+    CHECK(Signature(fnFail) == LiveSignature(v));
+  }
+  c4_Bytes failed;
+  CHECK(ReadFile(fnFail, failed));
+  CHECK(SameBytes(ctrl, failed));
+
+  // the same for the first commit, which leaves an empty file behind
+  remove(fnFail);
+  {
+    c4_Storage s(fnFail, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    Mutate(v, 1, 0);
+    f4_MaxFileEnd = 5000;
+    CHECK(!s.Commit());
+    CHECK(Signature(fnFail) == -1 || Signature(fnFail) == 0);
+
+    f4_MaxFileEnd = kMaxEndDefault;
+    CHECK(s.Commit());
+    CHECK(Signature(fnFail) == LiveSignature(v));
+  }
+
+  f4_MaxFileEnd = kMaxEndDefault;
+  f4_WideAbove = kStdLimit;
+  remove(fnFail);
+  remove(fnCtrl);
+}
+
+// Without a rollback in between, as it happened in the original bug: the
+// changes stay in memory after a failed commit, and the next commit is of a
+// different set of changes.  Whatever was allocated for the failed commit must
+// be given back, or else the next commit puts its data elsewhere.
+static void TestFailedCommitNoRollback(int mode_, bool wide_) {
+  printf("failed commit without rollback, mode %d, %s marks\n", mode_, wide_ ?
+    "wide": "standard");
+
+  const char *fnFail = "twide_fail.mk";
+  const char *fnCtrl = "twide_ctrl.mk";
+  remove(fnFail);
+  remove(fnCtrl);
+  f4_WideAbove = wide_ ? 0 : kStdLimit;
+
+  c4_Bytes ctrl;
+  {
+    c4_Storage s(fnCtrl, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    Mutate(v, 1, 0);
+    CHECK(s.Commit());
+    const int rows = v.GetSize();
+
+    Mutate(v, 2, 0); // never committed, as it makes no sense to do so
+    v.SetSize(rows); // so back to what it was, but with changes pending
+    SmallChange(v);
+    CHECK(s.Commit());
+    CHECK(Signature(fnCtrl) == LiveSignature(v));
+  }
+  CHECK(ReadFile(fnCtrl, ctrl));
+
+  c4_Bytes failed;
+  {
+    c4_Storage s(fnFail, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    Mutate(v, 1, 0);
+    CHECK(s.Commit());
+    const int rows = v.GetSize();
+
+    c4_Bytes before;
+    CHECK(ReadFile(fnFail, before));
+    f4_MaxFileEnd = before.Size() + 20000;
+
+    Mutate(v, 2, 0);
+    CHECK(!s.Commit()); // fails, which must not have any effect
+    CHECK(!s.Commit());
+    f4_MaxFileEnd = kMaxEndDefault;
+
+    v.SetSize(rows);
+    SmallChange(v);
+    CHECK(s.Commit());
+    CHECK(Signature(fnFail) == LiveSignature(v));
+  }
+  CHECK(ReadFile(fnFail, failed));
+  CHECK(SameBytes(ctrl, failed));
+
+  f4_WideAbove = kStdLimit;
+  remove(fnFail);
+  remove(fnCtrl);
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -580,6 +762,14 @@ static void TestCrash(bool wide_, int *outcomes_) {
 /////////////////////////////////////////////////////////////////////////////
 
 int main() {
+  TestFailedCommit(1, false);
+  TestFailedCommit(2, false);
+  TestFailedCommit(1, true);
+  TestFailedCommit(2, true);
+  TestFailedCommitNoRollback(1, false);
+  TestFailedCommitNoRollback(2, false);
+  TestFailedCommitNoRollback(1, true);
+  TestFailedCommitNoRollback(2, true);
   TestParity(1);
   TestParity(2);
   TestTransition(1);
