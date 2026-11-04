@@ -26,6 +26,14 @@
     Mk4tcl: "mk::file end" returns a wide integer, as does "mk::file space",
     which also no longer depends on the layout of internal classes.
 
+    tests/compat/compat.sh builds the version before all this and this one,
+    and shows that datafiles below 2 Gb are byte for byte the same, that
+    they read each other's datafiles, and what an old version makes of one
+    with wide marks: nothing (an empty database, since it was always so
+    that anything it cannot make sense of looks empty), without changing
+    a byte of it.  A program which then adds data to it will put a new
+    datafile behind the existing bytes, hiding but not destroying them.
+
     Interrupted commits: a commit which was interrupted (the program
     crashed, or the power went) could leave a datafile which was then
     opened as if it were empty, even though all data was still in it.
