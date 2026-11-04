@@ -322,6 +322,7 @@ int main(int argc, char **argv) {
     1, 2, 4, 40, 25000
   };
   for (int b = 0; b < (int)(sizeof budgets / sizeof *budgets); ++b) {
+    bool committed;
     {
       CrashStrategy cs(budgets[b]);
       cs.DataOpen(fn, 1);
@@ -330,10 +331,25 @@ int main(int argc, char **argv) {
       c4_BytesProp p("p");
       Fill(buf, 200 + b, len / 2);
       v.Add(p[c4_Bytes(buf, (int)(len / 2))]);
-      s.Commit(); // runs out of writes somewhere
+      s.Commit(); // runs out of writes somewhere, usually
+
+      // (the commit always says it succeeded, as the writes which do not
+      // happen are not reported: it was not interrupted if there was budget
+      // left, as it is then that it was also made durable, see DataCommit)
+      committed = cs._budget > 0;
     }
     printf("  crash after %d writes\n", budgets[b]);
-    VerifyFile(fn, sRows, sCount, false); // must be as before
+
+    // A commit which has not been interrupted (rows which are smaller need
+    // fewer writes than there are in the budget) has succeeded, and then the
+    // row is in the file.  If it was, the file must be as it was before.
+    if (committed) {
+      printf("  (not interrupted: the commit succeeded)\n");
+      sRows[sCount]._id = 200 + b;
+      sRows[sCount]._len = len / 2;
+      ++sCount;
+    }
+    VerifyFile(fn, sRows, sCount, false);
 
     // more commits must be possible, on a file with the remains at the end
     {
