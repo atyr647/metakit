@@ -162,6 +162,17 @@ void c4_Sequence::InsertAt(int index_, c4_Cursor newElem_, int count_) {
 
   SetNumRows(NumRows() + count_);
 
+  // The columns get the new rows one by one.  If one of them cannot take
+  // them (see c4_SizeError), those which did are put back as they were, so
+  // the columns all have the same number of rows.
+#if q4_EXCEPTIONS
+  c4_PtrArray inserted;
+  try {
+#define d4_INSERTED(h) inserted.Add(&(h))
+#else 
+#define d4_INSERTED(h)
+#endif 
+
   c4_Bytes data;
 
   for (int i = 0; i < newElem_._seq->NumHandlers(); ++i) {
@@ -186,12 +197,14 @@ void c4_Sequence::InsertAt(int index_, c4_Cursor newElem_, int count_) {
 
       c4_Handler &h2 = NthHandler(colNum);
       h2.Insert(index_, temp, count_);
+      d4_INSERTED(h2);
 
       for (int j = 0; j < count_; ++j)
         h2.Set(index_ + j, data);
     } else {
       h.GetBytes(ri, data);
       NthHandler(colNum).Insert(index_, data, count_);
+      d4_INSERTED(NthHandler(colNum));
     }
   }
 
@@ -205,9 +218,20 @@ void c4_Sequence::InsertAt(int index_, c4_Cursor newElem_, int count_) {
       if (newElem_._seq->PropIndex(h.PropId()) < 0) {
         h.ClearBytes(data);
         h.Insert(index_, data, count_);
+        d4_INSERTED(h);
       }
     }
   }
+
+#if q4_EXCEPTIONS
+  } catch (const c4_SizeError &) {
+    for (int k = 0; k < inserted.GetSize(); ++k)
+      ((c4_Handler*)inserted.GetAt(k))->Remove(index_, count_);
+    SetNumRows(NumRows() - count_);
+    throw ;
+  }
+#endif 
+#undef d4_INSERTED
 }
 
 /// Remove one or more rows from this sequence

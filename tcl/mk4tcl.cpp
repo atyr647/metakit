@@ -1494,7 +1494,25 @@ int MkTcl::Dispatcher(ClientData cd, Tcl_Interp *ip, int oc, Tcl_Obj *const *
     return TCL_ERROR;
   }
 
+#if q4_EXCEPTIONS
+  // A column which would become too large is reported as an error in Tcl, an
+  // exception cannot be allowed to get out into the C code of Tcl.  Nothing
+  // was changed by the command which caused it, but what the command was
+  // part of has to be rolled back, since nothing can be committed until then.
+  try {
+    return self->Execute(oc, ov);
+  } catch (const c4_SizeError &e) {
+    char msg[300];
+    sprintf(msg, "a column would grow to %.0f bytes, more than the limit of "
+      "%ld bytes for a column: nothing can be committed until mk::file "
+      "rollback has discarded the changes made since the last commit",
+      (double)e._wanted, (long)e._limit);
+    Tcl_SetResult(ip, msg, TCL_VOLATILE);
+    return TCL_ERROR;
+  }
+#else 
   return self->Execute(oc, ov);
+#endif 
 }
 
 MkTcl::MkTcl(MkWorkspace *ws_, Tcl_Interp *ip_, int id_, const char *cmd_): Tcl

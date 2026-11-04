@@ -52,7 +52,10 @@ DATAFILES OVER 2 GB - WARNING - This version can read and write datafiles of
     tells which kind of marks a datafile has, without needing the library:
     "mkinfo -q file" prints standard, wide, old, empty, damaged or unknown,
     and its exit status is 3 for wide marks.  A single column or memo is still
-    limited to 2 GB.  See CHANGES, doc/format.html, and src/marks.h.
+    limited to 2 GB: a change which would go beyond that is not done, and
+    throws a c4_SizeError (or calls the handler set with c4_SetSizeErrorHandler)
+    after which the changes have to be rolled back.  See CHANGES, doc/format.html,
+    and src/marks.h.
 
     The default commit mode keeps just one valid state: if a datafile is cut
     short in its last commit (a copy which was interrupted, say) it shows up

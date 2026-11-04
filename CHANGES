@@ -9,9 +9,25 @@
     being empty, so do not open one with them, not even to read it.
     Single columns and memos are still limited to 2 Gb each (a 32-bit
     size, one less than 2^31 bytes), and this is enforced now: operations
-    on memos which would exceed it return false, and any other growth of a
-    column prints a message and ends the program, since there is no way to
-    carry on with changes which are half done.  See also doc/format.html.
+    on memos which would exceed it return false (c4_BytesRef::Modify), and
+    any other growth of a column is a size error: see below.  See also
+    doc/format.html.
+
+    Size errors: a column which would exceed the limit is reported by a
+    handler (c4_SetSizeErrorHandler, in mk4.h), before anything is changed.
+    The default handler throws a c4_SizeError, so a program can catch it, and
+    if nobody does it ends like an abort() (or with a message and abort() for
+    a compiler without exceptions); a handler of your own may not return.
+    What this guarantees: no memory is damaged and nothing leaks; adding rows
+    is all or nothing in every column; the storage is then marked as not to
+    be committed (Commit returns false) until it has been rolled back, since
+    a change which was in progress will not be completed.  The views of that
+    storage can be looked at but are only good to roll back, and views which
+    depend on a changed one (sorted, hashed ...) are to be rebuilt.  Mk4tcl
+    returns an error for the command, with a message which says so.  This
+    was tested with random changes that meet a low limit: 20000 scenarios with
+    over 5000 size errors, which were checked against a model, and also under
+    AddressSanitizer with leak detection (tests/tfuzz.cpp, tests/twide.cpp).
 
     C++ API: file positions and sizes are of the new type t4_fpos (a 64-bit
     integer where the compiler has one) in c4_Strategy and c4_FileStrategy:
@@ -95,6 +111,19 @@
     the hash for hashed views, which now wraps without changing any value,
     and memcmp of empty values).  Two are left: reference binding to a null
     c4_Cursor in the notification code, which means "default rows" there.
+
+    Known problem, not caused by this and not fixed: in the Mk4tcl tests
+    (tcl/tests/object.test, "blocked view" and "ordered view"), a view made
+    of a range of a blocked view returns wrong values for doubles after rows
+    were deleted, if the members of c4_Persist (src/persist.h) are laid out
+    in a certain way.  Merely adding a bool before _fCommit, to the version
+    before any of the work in here, makes it show, and it does not with the
+    members as they are, which is why the flag for size errors is where it is.
+    Neither AddressSanitizer nor valgrind find anything.  Something which
+    depends on the layout of the memory is wrong in how a blocked view or its
+    range hands out the values, and anything which changes that may make it
+    show again.  To see it, put "bool _padding;" after _rootWalk in c4_Persist
+    (and "_padding(false)" in its constructor) and run the Mk4tcl tests.
 
     Tests: "make test" also runs tests/twide.cpp, which covers the wide
     marks (using a hook to make small datafiles use them), positions up to

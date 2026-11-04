@@ -76,5 +76,39 @@ test 4 {data survives when a datafile is reopened} -body {
   set r
 } -cleanup {mk::file close db; file delete $f} -result {70000 A A 70000 B B 70000 C C 70000 D D}
 
+# A column cannot hold more than 2 Gb.  Asking for it is an error in Tcl, it
+# can be handled, and the changes which were made have to be rolled back.
+# (A million million longs are never allocated, the error comes first.)
+test 5 {a column which would be too large is an error, not the end} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {l:L}
+  mk::row append db.a l 5
+  mk::file commit db
+
+  # (each long takes 8 bytes: this many would be a column of 2 Gb, one too many)
+  set r [catch {mk::view size db.a 268435456} msg]
+  assert $r
+  assert [string match {*more than the limit*} $msg]
+  equal [mk::view size db.a] 1
+
+  # nothing can be committed now, so the file cannot get the incomplete data
+  assert [catch {mk::file commit db}]
+  mk::file rollback db
+  equal [mk::view size db.a] 1
+  equal [mk::get db.a!0 l] 5
+
+  # and it all works again
+  mk::row append db.a l 6
+  mk::file commit db
+  mk::file close db
+
+  mk::file open db $f -readonly
+  set r [list [mk::view size db.a] [mk::get db.a!0 l] [mk::get db.a!1 l]]
+  mk::file close db
+  set r
+} -cleanup {catch {mk::file close db}; file delete $f} -result {2 5 6}
+
 file delete $f
 cleanupTests

@@ -1122,7 +1122,8 @@ t4_i32 _oldSeek;
 
 c4_Persist::c4_Persist(c4_Strategy &strategy_, bool owned_, int mode_): _space
   (0), _strategy(strategy_), _root(0), _differ(0), _fCommit(0), _mode(mode_),
-  _owned(owned_), _oldBuf(0), _oldCurr(0), _oldLimit(0), _oldSeek( - 1) {
+  _owned(owned_), _tainted(false), _oldBuf(0), _oldCurr(0), _oldLimit(0), _oldSeek
+  ( - 1) {
   if (_mode == 1)
     _space = d4_new c4_Allocator;
 }
@@ -1182,9 +1183,24 @@ c4_Storage *c4_Persist::GetAside()const {
   return _differ != 0 ? &_differ->_storage: 0;
 }
 
+void c4_Persist::Taint() {
+  _tainted = true;
+}
+
+bool c4_Persist::IsTainted()const {
+  return _tainted;
+}
+
 bool c4_Persist::Commit(bool full_) {
   // 1-Mar-1999, new semantics! return success status of commits
   _strategy._failure = 0;
+
+  // after a column was refused to grow, whatever was in progress was left
+  // half done, so nothing may be committed until that has been rolled back
+  if (_tainted) {
+    _strategy._failure =  - 2;
+    return false;
+  }
 
   if (!_strategy.IsValid())
     return false;
@@ -1210,6 +1226,7 @@ bool c4_Persist::Rollback(bool full_) {
   // earlier failed commit would make LoadAll() skip loading and yield an
   // empty database
   _strategy._failure = 0;
+  _tainted = false;
 
   _root->DetachFromParent();
   _root->DetachFromStorage(true);

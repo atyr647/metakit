@@ -28,9 +28,8 @@ class c4_Strategy; // not defined here
 // it whenever a column grows: it is a variable only so tests can lower it.
 extern t4_i32 f4_MaxColumnSize;
 
-// There is no way to report an error where a column would become too large,
-// since this happens in the middle of changes in memory, which would end up
-// inconsistent.  So this reports the problem and ends the program.
+// Reports a column which would become too large, see c4_SetSizeErrorHandler.
+// This is called before anything is changed, and does not return.
 extern void f4_ColumnTooLarge(t4_fpos wanted_);
 
 class c4_Column {
@@ -96,6 +95,9 @@ class c4_Column {
 
     void InsertData(t4_i32 index_, t4_fpos count_, bool clear_);
     void RemoveData(t4_i32 index_, t4_i32 count_);
+
+    void CheckGrow(t4_fpos extra_)const;
+    //: Reports an error if the column cannot grow by this many bytes.
     void RemoveGap();
 
     enum {
@@ -120,6 +122,7 @@ class c4_Column {
     void MoveGapTo(t4_i32 pos_);
 
     t4_byte *CopyData(t4_i32, t4_i32, int);
+    void TooLarge(t4_fpos wanted_)const;
 };
 
 /////////////////////////////////////////////////////////////////////////////

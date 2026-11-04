@@ -525,6 +525,169 @@ static void OneByteTooMany() {
 }
 #endif 
 
+#if q4_EXCEPTIONS
+static int sHandled = 0;
+
+static void ThrowingHandler(const c4_SizeError &e_) {
+  ++sHandled;
+  throw (int)(e_._limit);
+}
+
+// a size error can be recovered from: nothing is done by what causes it, the
+// columns of the view still all have the same rows, nothing can be committed
+// (since the changes are not complete), and a rollback makes all well again
+static void TestSizeErrors() {
+  printf("size errors can be recovered from\n");
+
+  c4_IntProp pi("i");
+  c4_StringProp ps("s");
+  c4_BytesProp pb("b");
+  c4_LongProp pl("l");
+
+  const char *fn = "twide_size.mk";
+  for (int mode = 1; mode <= 2; ++mode) {
+    remove(fn);
+    long committed = 0;
+    {
+      c4_Storage s(fn, mode);
+      c4_View v = s.GetAs("a[i:I,s:S,b:B,l:L]");
+      for (int k = 0; k < 20; ++k) {
+        int at = v.Add(pi[k]);
+        ps(v[at]) = "committed";
+        pl(v[at]) = k * 1000003;
+      }
+      CHECK(s.Commit());
+      committed = LiveSignature(v);
+    }
+
+    c4_Bytes before;
+    CHECK(ReadFile(fn, before));
+
+    f4_MaxColumnSize = 3000;
+    {
+      c4_Storage s(fn, mode);
+      c4_View v = s.GetAs("a[i:I,s:S,b:B,l:L]");
+      const int rows = v.GetSize();
+      CHECK(rows == 20);
+
+      // text goes into the column of the strings until it is full, and then
+      // the row which does not fit is not there, in none of the columns
+      bool caught = false;
+      int added = 0;
+      try {
+        for (; added < 1000; ++added) {
+          static char text[201];
+          memset(text, 'x', 200);
+          c4_Row r;
+          pi(r) = 7;
+          ps(r) = text;
+          pl(r) = 9;
+          v.Add(r);
+        }
+      } catch (const c4_SizeError &e) {
+        caught = true;
+        CHECK(e._limit == 3000);
+        CHECK(e._wanted > 3000);
+      }
+      CHECK(caught);
+      CHECK(v.GetSize() == rows + added);
+      CHECK(added > 5 && added < 25); // it was a column of 3000 bytes
+      for (int k = 0; k < v.GetSize(); ++k) // all there, in every column
+        CHECK(pi(v[k]) == (k < rows ? k: 7) && (t4_i64)pl(v[k]) == (k < rows ?
+          k * 1000003: 9));
+
+      // nothing can be committed now, and nothing is written
+      CHECK(!s.Commit());
+      CHECK(!s.Commit());
+      c4_Bytes now;
+      CHECK(ReadFile(fn, now));
+      CHECK(SameBytes(before, now));
+
+      // until what was changed is rolled back
+      CHECK(s.Rollback());
+      v = s.GetAs("a[i:I,s:S,b:B,l:L]");
+      CHECK(v.GetSize() == rows);
+      f4_MaxColumnSize = 0x7fffffff;
+      CHECK(LiveSignature(v) == committed);
+
+      // and then it works as it did
+      int at = v.Add(pi[1000]);
+      ps(v[at]) = "after";
+      CHECK(s.Commit());
+      CHECK(Signature(fn) == LiveSignature(v));
+    }
+
+    // setting a value which is too large for a column changes nothing either
+    {
+      remove(fn);
+      c4_Storage s(fn, mode);
+      c4_View v = s.GetAs("a[b:B]");
+      v.SetSize(1);
+      f4_MaxColumnSize = 100;
+      static t4_byte big[101];
+      bool caught = false;
+      try {
+        pb(v[0]).SetData(c4_Bytes(big, sizeof big));
+      } catch (const c4_SizeError &) {
+        caught = true;
+      }
+      f4_MaxColumnSize = 0x7fffffff;
+      CHECK(caught);
+      CHECK(pb(v[0]).GetSize() == 0);
+      CHECK(!s.Commit());
+      CHECK(s.Rollback());
+    }
+
+    // two thirds of the longs are enough: this is a column of integers, whose
+    // number of rows is part of what must not change (it used to, first)
+    {
+      remove(fn);
+      c4_Storage s(fn, mode);
+      c4_View v = s.GetAs("a[l:L]");
+      v.SetSize(10);
+      for (int k = 0; k < 10; ++k)
+        pl(v[k]) = (t4_i64)k << 40;
+      f4_MaxColumnSize = 100;
+      bool caught = false;
+      try {
+        v.SetSize(1000);
+      } catch (const c4_SizeError &) {
+        caught = true;
+      }
+      f4_MaxColumnSize = 0x7fffffff;
+      CHECK(caught);
+      CHECK(v.GetSize() == 10);
+      for (int k = 0; k < v.GetSize(); ++k)
+        CHECK((t4_i64)pl(v[k]) == (t4_i64)k << 40);
+      CHECK(!s.Commit());
+      CHECK(s.Rollback());
+    }
+  }
+  remove(fn);
+
+  // a handler of our own, which is called before the error propagates
+  {
+    c4_SizeErrorHandler previous = c4_SetSizeErrorHandler(ThrowingHandler);
+    f4_MaxColumnSize = 50;
+    c4_Storage s;
+    c4_View v = s.GetAs("a[b:B]");
+    v.SetSize(1);
+    static t4_byte big[51];
+    int caught = 0;
+    try {
+      pb(v[0]).SetData(c4_Bytes(big, sizeof big));
+    } catch (int limit) {
+      caught = limit;
+    }
+    f4_MaxColumnSize = 0x7fffffff;
+    CHECK(caught == 50 && sHandled == 1);
+    CHECK(c4_SetSizeErrorHandler(previous) == ThrowingHandler);
+    // and zero restores the default
+    CHECK(c4_SetSizeErrorHandler(0) == previous);
+  }
+}
+#endif 
+
 static void TestColumnLimit() {
   printf("limit on the size of a column\n");
 
@@ -1050,6 +1213,9 @@ static void TestCrash(bool wide_, int *outcomes_) {
 
 int main() {
   TestColumnLimit();
+#if q4_EXCEPTIONS
+  TestSizeErrors();
+#endif 
   TestTruncation(1, false);
   TestTruncation(2, false);
   TestTruncation(1, true);

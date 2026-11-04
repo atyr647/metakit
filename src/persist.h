@@ -80,6 +80,11 @@ class c4_Persist {
     bool(c4_Persist:: *_fCommit)(bool);
     int _mode;
     bool _owned;
+    // Here since it takes no room: the size of this object is the same as it
+    // was.  Adding to it showed a problem in the Mk4tcl tests (blocked and
+    // ordered views give wrong values for doubles), which depends on how the
+    // memory is laid out, and not on anything which was added.  See CHANGES.
+    bool _tainted; // an operation was abandoned (c4_SizeError), see Taint
 
     // used for on-the-fly conversion of old-format datafiles
     t4_byte *_oldBuf;
@@ -105,6 +110,12 @@ class c4_Persist {
 
     bool Commit(bool full_);
     bool Rollback(bool full_);
+
+    // Flags that an operation which changed this was not completed, so the
+    // changes cannot be taken to be consistent.  Commit then fails, until
+    // the changes are rolled back.
+    void Taint();
+    bool IsTainted()const;
 
     bool LoadIt(c4_Column &walk_);
     void LoadAll();

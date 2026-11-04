@@ -236,6 +236,54 @@ typedef t4_i32 t4_fpos;
 #endif 
 
 //---------------------------------------------------------------------------
+// Errors for columns which would grow beyond what a column can hold
+
+// True if the compiler allows exceptions, which Metakit then uses for this
+#if !defined (q4_EXCEPTIONS)
+#if defined (__cpp_exceptions) || defined (__EXCEPTIONS) || defined (_CPPUNWIND)
+#define q4_EXCEPTIONS 1
+#else 
+#define q4_EXCEPTIONS 0
+#endif 
+#endif 
+
+/// Describes a column which would have become too large.  The size of one
+/// column (all the integers, or all the strings, or all the bytes of a
+/// property, as well as every memo) is stored in 32 bits, so it cannot
+/// exceed 2^31-1 bytes, however large the datafile is.  An operation which
+/// would take a column beyond that does not happen: nothing is changed, and
+/// this is reported, as described in c4_SetSizeErrorHandler.
+class c4_SizeError {
+  public:
+    c4_SizeError(t4_fpos wanted_, t4_i32 limit_): _wanted(wanted_), _limit
+      (limit_){}
+
+    /// A message to show
+    const char *What()const {
+      return "a column would exceed the maximum size of a column";
+    }
+
+    /// The size which the column would have got
+    t4_fpos _wanted;
+    /// The size which it may not exceed
+    t4_i32 _limit;
+};
+
+/// A handler for size errors: it is called, with nothing changed yet by the
+/// operation which caused it, and may not return: it has to throw an
+/// exception (the default) or leave in some other way, or else the program
+/// is ended.  The storage which this happened in is then in a state which
+/// is safe but not to be used for anything but rolling it back (Rollback) or
+/// getting rid of it: nothing can be committed until then (Commit returns
+/// false), and views which depend on the changed one are not up to date.
+typedef void(*c4_SizeErrorHandler)(const c4_SizeError &);
+
+/// Install a handler, returns the previous one.  Zero restores the default,
+/// which throws a c4_SizeError, or ends the program with a message if the
+/// compiler has no exceptions.  An exception which nobody catches ends it too.
+extern c4_SizeErrorHandler c4_SetSizeErrorHandler(c4_SizeErrorHandler);
+
+//---------------------------------------------------------------------------
 
 class c4_View {
   protected:

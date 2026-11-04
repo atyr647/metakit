@@ -43,7 +43,29 @@ void f4_memmove(void *to_, const void *from_, int n_) {
 
 t4_i32 f4_MaxColumnSize = 0x7fffffff;
 
+static void DefaultSizeHandler(const c4_SizeError &e_) {
+#if q4_EXCEPTIONS
+  throw e_;
+#else 
+  fprintf(stderr, "Metakit: a column of %.0f bytes exceeds the limit of %ld "
+    "bytes for a single column\n", (double)e_._wanted, (long)e_._limit);
+  abort();
+#endif 
+}
+
+static c4_SizeErrorHandler sSizeHandler = DefaultSizeHandler;
+
+c4_SizeErrorHandler c4_SetSizeErrorHandler(c4_SizeErrorHandler handler_) {
+  c4_SizeErrorHandler previous = sSizeHandler;
+  sSizeHandler = handler_ != 0 ? handler_: DefaultSizeHandler;
+  return previous;
+}
+
 void f4_ColumnTooLarge(t4_fpos wanted_) {
+  c4_SizeError e(wanted_, f4_MaxColumnSize);
+  sSizeHandler(e);
+
+  // the handler returned, but nothing can be done to go on from here
   fprintf(stderr, "Metakit: a column of %.0f bytes exceeds the limit of %ld "
     "bytes for a single column\n", (double)wanted_, (long)f4_MaxColumnSize);
   abort();
@@ -525,13 +547,26 @@ void c4_Column::RemoveGap() {
   Validate();
 }
 
+// A column which cannot grow has to be reported before anything is changed,
+// and the storage it belongs to is flagged, since whatever the caller was in
+// the middle of is not going to be completed.  That must not get committed.
+void c4_Column::TooLarge(t4_fpos wanted_)const {
+  if (_persist != 0)
+    _persist->Taint();
+  f4_ColumnTooLarge(wanted_);
+}
+
+void c4_Column::CheckGrow(t4_fpos extra_)const {
+  if (extra_ > f4_MaxColumnSize - _size)
+    TooLarge((t4_fpos)_size + extra_);
+}
+
 void c4_Column::Grow(t4_i32 off_, t4_i32 diff_) {
   d4_assert(off_ <= _size);
   d4_assert(diff_ > 0);
 
   // all growth comes through here, this is where the size limit is enforced
-  if (diff_ > f4_MaxColumnSize - _size)
-    f4_ColumnTooLarge((t4_fpos)_size + diff_);
+  CheckGrow(diff_);
 
   if (_segments.GetSize() == 0)
     SetupSegments();
@@ -855,8 +890,7 @@ void c4_Column::InsertData(t4_i32 index_, t4_fpos count_, bool clear_) {
 
   if (count_ > 0) {
     // the count may be a product which does not fit in 32 bits
-    if (count_ > f4_MaxColumnSize - ColSize())
-      f4_ColumnTooLarge((t4_fpos)ColSize() + count_);
+    CheckGrow(count_);
 
     Grow(index_, (t4_i32)count_);
 
@@ -1410,6 +1444,11 @@ void c4_ColOfInts::Remove(int index_, int count_) {
 }
 
 void c4_ColOfInts::ResizeData(int index_, int count_, bool clear_) {
+  // If the column cannot hold that many more entries, it has to be reported
+  // before anything is changed, the count of rows is part of what changes.
+  if (count_ > 0)
+    CheckGrow((((t4_fpos)_numRows + count_) *_currWidth + 7 >> 3) - ColSize());
+
   _numRows += count_;
 
   if (!(_currWidth &7)) {

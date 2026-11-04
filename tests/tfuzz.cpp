@@ -27,6 +27,7 @@
 
 extern t4_fpos f4_WideAbove;
 extern t4_fpos f4_MaxFileEnd;
+extern t4_i32 f4_MaxColumnSize;
 
 static const t4_fpos kStdLimit = 0x7fffffff - 64;
 static const t4_fpos kMaxEndDefault = f4_MaxFileEnd;
@@ -35,6 +36,7 @@ static bool sVerbose = false;
 static unsigned long sSeed = 0;
 static int sStep = 0;
 static int sFailures = 0;
+static int sSizeErrors = 0; // the number of size errors which were recovered from
 
 #define CHECK(c) do { if (!(c)) { \
     fprintf(stderr, "seed %lu step %d: CHECK FAILED line %d: %s\n", sSeed, \
@@ -245,7 +247,7 @@ struct Commit {
 class Scenario {
   public:
     Scenario(unsigned long seed_): _r(seed_), _seed(seed_), _store(0),
-      _junk(false) {}
+      _junk(false), _limit(0) {}
     ~Scenario() {
       delete _store;
     }
@@ -256,6 +258,8 @@ class Scenario {
     void Open();
     void Close();
     void Mutate();
+    void MutateOnce();
+    void OnSizeError();
     void DoCommit();
     void DoRollback();
     void DoReopen();
@@ -274,6 +278,7 @@ class Scenario {
     int _marks; // 0: standard, 1: wide, 2: switch to wide at some point
     bool _wideNow;
     bool _junk; // the datafile has the remains of an interrupted commit
+    t4_i32 _limit; // if not zero, the size which a column may not exceed
 
     Model _cur; // what the view should have now
     Model _committed; // what the datafile should hold, same as _hist.back()
@@ -299,7 +304,58 @@ void Scenario::Close() {
   _store = 0;
 }
 
+// Some scenarios have a low limit for the size of a column, so that changes
+// meet it.  Then nothing is done by what hits it, nothing can be committed,
+// and rolling back gives the committed state: all of which is checked.
 void Scenario::Mutate() {
+#if q4_EXCEPTIONS
+  if (_limit != 0) {
+    f4_MaxColumnSize = _limit;
+    try {
+      MutateOnce();
+      f4_MaxColumnSize = 0x7fffffff;
+    } catch (const c4_SizeError &) {
+      f4_MaxColumnSize = 0x7fffffff;
+      OnSizeError();
+    }
+    return ;
+  }
+#endif 
+  MutateOnce();
+}
+
+void Scenario::OnSizeError() {
+  ++sSizeErrors;
+  LOG("  size error, rolling back\n");
+
+  // the view is not to be used any more, but it is all there to be looked at
+  for (int i = 0; i < _view.GetSize(); ++i) {
+    c4_Bytes b;
+    c4_RowRef r = _view[i];
+    unsigned long sink = (unsigned long)(long)pi(r) + strlen(ps(r)) +
+      (unsigned long)(t4_i64)pl(r);
+    pb(r).GetData(b);
+    sink += b.Size();
+    if (sink == 0x7ffffffeUL)
+      printf(" ");
+  }
+
+  // If it was a value in a row of its own which was too large, as it is made
+  // before it is added, the view was not touched.  Otherwise the change is
+  // half done and nothing may be committed, until it is rolled back.
+  if (!Same(_view, _cur)) {
+    std::string before, after;
+    CHECK(ReadFile(_fn.c_str(), before));
+    CHECK(!_store->Commit());
+    CHECK(!_store->Commit());
+    CHECK(ReadFile(_fn.c_str(), after));
+    CHECK(before == after);
+  }
+
+  DoRollback();
+}
+
+void Scenario::MutateOnce() {
   int n = (int)_cur.size();
   int op = _r.Below(100);
 
@@ -351,7 +407,11 @@ void Scenario::Mutate() {
     std::string &b = _cur[at]._b;
     int off = b.empty() ? 0: _r.Below((int)b.size() + 1);
     std::string chunk = RandomBytes(_r, 1 + _r.Below(3000));
-    CHECK(pb(_view[at]).Modify(c4_Bytes(chunk.data(), (int)chunk.size()), off));
+    const bool done = pb(_view[at]).Modify(c4_Bytes(chunk.data(), (int)
+      chunk.size()), off);
+    CHECK(done || _limit != 0); // it can only be refused for the size
+    if (!done)
+      return ; // nothing was changed
     if (off + chunk.size() > b.size())
       b.resize(off + chunk.size());
     b.replace(off, chunk.size(), chunk);
@@ -603,14 +663,18 @@ void Scenario::Run() {
   sSeed = _seed;
   _mode = 1 + _r.Below(2);
   _marks = _r.Below(3);
+#if q4_EXCEPTIONS
+  if (_r.Below(4) == 0)
+    _limit = 15000 + _r.Below(60000);
+#endif 
   _wideNow = _marks == 1;
   char name[64];
   sprintf(name, "tfuzz_%lu.mk", _seed);
   _fn = name;
   remove(name);
 
-  LOG("seed %lu: mode %d, marks %s\n", _seed, _mode, _marks == 0 ? "standard":
-    _marks == 1 ? "wide": "standard, then wide");
+  LOG("seed %lu: mode %d, marks %s, column limit %d\n", _seed, _mode, _marks ==
+    0 ? "standard": _marks == 1 ? "wide": "standard, then wide", (int)_limit);
 
   Open();
 
@@ -696,6 +760,7 @@ int main(int argc, char **argv) {
     const unsigned long seed = seeds[n];
     f4_WideAbove = kStdLimit;
     f4_MaxFileEnd = kMaxEndDefault;
+    f4_MaxColumnSize = 0x7fffffff;
     try {
       Scenario s(seed);
       s.Run();
@@ -706,7 +771,9 @@ int main(int argc, char **argv) {
   }
   f4_WideAbove = kStdLimit;
   f4_MaxFileEnd = kMaxEndDefault;
+  f4_MaxColumnSize = 0x7fffffff;
 
-  printf("%d scenarios, %d failed\n", (int)seeds.size(), failed);
+  printf("%d scenarios, %d failed (%d size errors recovered from)\n", (int)
+    seeds.size(), failed, sSizeErrors);
   return failed == 0 ? 0 : 1;
 }

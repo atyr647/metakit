@@ -652,9 +652,13 @@ int c4_FormatB::DoCompare(const c4_Bytes &b1_, const c4_Bytes &b2_) {
 void c4_FormatB::Insert(int index_, const c4_Bytes &buf_, int count_) {
   d4_assert(count_ > 0);
 
+  int m = buf_.Size();
+
+  // if the data cannot grow that much, that is reported before any changes
+  _data.CheckGrow((t4_fpos)count_ *m);
+
   _recalc = true;
 
-  int m = buf_.Size();
   t4_i32 off = Offset(index_);
 
   _memos.InsertAt(index_, 0, count_);
