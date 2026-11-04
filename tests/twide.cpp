@@ -316,6 +316,163 @@ static void TestFailedCommitNoRollback(int mode_, bool wide_) {
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// 0a. A datafile which has been cut short, as by a crash which loses the
+//     last part of a file, or a copy which was interrupted
+
+static void WriteFile(const char *fn_, const t4_byte *p_, int n_) {
+  FILE *f = fopen(fn_, "wb");
+  CHECK(f != 0);
+  if (f != 0) {
+    CHECK((int)fwrite(p_, 1, n_, f) == n_);
+    fclose(f);
+  }
+}
+
+static void TestTruncation(int mode_, bool wide_) {
+  printf("truncated datafile, mode %d, %s marks\n", mode_, wide_ ? "wide":
+    "standard");
+
+  const char *fn = "twide_cut.mk";
+  const char *fnCut = "twide_cut2.mk";
+  remove(fn);
+  f4_WideAbove = wide_ ? 0 : kStdLimit;
+
+  // make a datafile with a number of commits, and note what each one gives
+  const int kCommits = 5;
+  long sigs[kCommits + 1];
+  int ends[kCommits + 1];
+  sigs[0] = 0; // the empty database, with no rows
+  ends[0] = 0;
+  {
+    c4_Storage s(fn, mode_);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    for (int r = 1; r <= kCommits; ++r) {
+      Mutate(v, r, r % 3 == 0 ? 1: r % 4 == 0 ? 2: 0);
+      CHECK(s.Commit());
+      sigs[r] = LiveSignature(v);
+      ends[r] = (int)s.Strategy().FileSize();
+      CHECK(Signature(fn) == sigs[r]);
+      for (int k = 0; k < r; ++k)
+        CHECK(sigs[k] != sigs[r]); // or they cannot be told apart
+    }
+  }
+  f4_WideAbove = kStdLimit;
+
+  c4_Bytes whole;
+  CHECK(ReadFile(fn, whole));
+  const int size = whole.Size();
+  CHECK(size == ends[kCommits]);
+
+  // the lengths to try: the start, around the end of each commit, all over
+  const int kMax = 4000;
+  int cuts[kMax];
+  int n = 0;
+  for (int i = 0; i <= 64; ++i)
+    cuts[n++] = i;
+  for (int r = 1; r <= kCommits; ++r)
+    for (int d =  - 40; d <= 40; ++d)
+      if (ends[r] + d >= 0 && ends[r] + d <= size)
+        cuts[n++] = ends[r] + d;
+  for (int L = 0; L <= size; L += 997)
+    cuts[n++] = L;
+  srand(1234);
+  for (int i = 0; i < 300; ++i)
+    cuts[n++] = rand() % (size + 1);
+  cuts[n++] = size;
+
+  int found[kCommits + 1];
+  memset(found, 0, sizeof found);
+  int damaged = 0, notBack = 0, stale = 0;
+
+  for (int i = 0; i < n; ++i) {
+    const int L = cuts[i];
+    WriteFile(fnCut, whole.Contents(), L);
+
+    int rows = 0;
+    const long sig = Signature(fnCut, &rows);
+
+    int state =  - 1; // the commit which this is the result of
+    for (int r = 0; r <= kCommits; ++r)
+      if (sig == sigs[r] && (r > 0 || rows == 0))
+        state = r;
+
+    if (state < 0) {
+      // Only in mode 1 there is a case in which this can be: the datafile is
+      // cut exactly where an older commit ended, which then looks like the
+      // last one.  But later commits reuse space inside the file, so that
+      // older commit has been partly overwritten.  It is the only commit
+      // which a datafile in mode 1 guarantees, extend mode (2) keeps all.
+      bool oldEnd = false;
+      for (int r = 1; r < kCommits; ++r)
+        if (ends[r] == L)
+          oldEnd = true;
+
+      if (mode_ == 1 && oldEnd && rows > 0) {
+        ++stale;
+        continue;
+      }
+
+      ++damaged;
+      printf("  DAMAGED at length %d of %d: %d rows, signature %ld\n", L, size,
+        rows, sig);
+      continue;
+    }
+    ++found[state];
+
+    // what is left of the datafile after an interruption: the commits
+    // which are complete in it, and nothing else, may be found
+    int last = 0;
+    for (int r = 1; r <= kCommits; ++r)
+      if (ends[r] <= L)
+        last = r;
+    CHECK(state <= last);
+
+    if (mode_ == 2) {
+      // each commit is added to the end, so up to the last complete one
+      // everything is still there, and it is found, whatever follows it
+      CHECK(state == last);
+    } else if (state != last)
+      ++notBack; // the header only tells about the last commit, see below
+  }
+
+  CHECK(damaged == 0);
+  CHECK(mode_ == 1 || stale == 0);
+  CHECK(found[kCommits] > 0);
+
+  printf("  %d lengths tried, found: empty %d, commit 1..%d: ", n, found[0],
+    kCommits);
+  for (int r = 1; r <= kCommits; ++r)
+    printf("%d ", found[r]);
+  printf("(%d earlier state, %d stale: only mode 1 can have these)\n", notBack,
+    stale);
+
+  // a cut datafile which is opened to be changed must work as well, here
+  // the lengths are those where the cut is just before or after a mark
+  for (int r = 1; r <= kCommits; ++r)
+    for (int d = - 9; d <= 9; d += 3) {
+      const int L = ends[r] + d;
+      if (L < 0 || L > size)
+        continue;
+
+      WriteFile(fnCut, whole.Contents(), L);
+      long live = 0;
+      {
+        c4_Storage s(fnCut, mode_);
+        c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+        f4_WideAbove = wide_ ? 0 : kStdLimit;
+        Mutate(v, 60 + r, 0);
+        CHECK(s.Commit());
+        f4_WideAbove = kStdLimit;
+        live = LiveSignature(v);
+      }
+      CHECK(Signature(fnCut) == live);
+    }
+
+  remove(fn);
+  remove(fnCut);
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // 0b. A single column (or memo) cannot be larger than 2 Gb: this is enforced
 
 #if HAVE_FORK
@@ -893,6 +1050,10 @@ static void TestCrash(bool wide_, int *outcomes_) {
 
 int main() {
   TestColumnLimit();
+  TestTruncation(1, false);
+  TestTruncation(2, false);
+  TestTruncation(1, true);
+  TestTruncation(2, true);
   TestFailedCommit(1, false);
   TestFailedCommit(2, false);
   TestFailedCommit(1, true);

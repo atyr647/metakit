@@ -31,6 +31,13 @@
     opened as if it were empty, even though all data was still in it.
     The last complete commit is now found again, and more commits can
     follow on such a file.  Rollback after a failed commit also works now.
+    The same goes for a datafile which has been cut short: in extend mode
+    (c4_Storage mode 2) the last commit which is entirely there is found
+    again, however it was cut.  A datafile in the default mode keeps just
+    one valid state, so one which is cut short in that last commit shows up
+    as empty, as it always did (the data is not touched, only not found),
+    and if it is cut exactly where an older commit ended, that commit is
+    found, but its data may have been partly overwritten by later commits.
 
     Bugs fixed: columns of integers of more than 256 Mb (e.g. 33 million
     64-bit values) made the program crash, because their size in bits was
