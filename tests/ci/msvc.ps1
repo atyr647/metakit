@@ -46,7 +46,9 @@ $reg = "regress", "tbasic1", "tbasic2", "tcusto1", "tcusto2", "tdiffer",
   "textend", "tformat", "tlimits", "tmapped", "tnotify", "tresize", "tstore1",
   "tstore2", "tstore3", "tstore4", "tstore5"
 $regSrc = @($reg | ForEach-Object { "$root\tests\$_.cpp" })
-Run "build regress" cl @flags @regSrc /Fe:regress.exe /link mk4.lib
+# (q4_NOTHROW: the expected output in tests/ok is that of the build where a
+# failed check goes on, as with gcc, and not where it throws, as MSVC would)
+Run "build regress" cl @flags /Dq4_NOTHROW=1 @regSrc /Fe:regress.exe /link mk4.lib
 
 New-Item -ItemType Directory tests | Out-Null
 Copy-Item "$root\unix\reversed" .

@@ -20,7 +20,7 @@ jobs:
           - { name: "linux x64", os: ubuntu-24.04, large: "5 512 --expect-all" }
           - { name: "linux arm64", os: ubuntu-24.04-arm, large: "5 512 --expect-all" }
           - { name: "macos arm64", os: macos-latest, large: "5 512 --expect-all" }
-          - { name: "macos x64", os: macos-13, large: "" }
+          - { name: "macos x64", os: macos-15-intel, large: "" }
     env:
       LD_LIBRARY_PATH: .
       DYLD_LIBRARY_PATH: .
@@ -80,10 +80,12 @@ jobs:
         run: |
           mkdir build && cd build
           CXX="${{ matrix.cxx || 'g++' }}" CXXFLAGS="${{ matrix.cxxflags }}" LDFLAGS="${{ matrix.ldflags }}" ../unix/configure
-          make -j4 libmk4.so regress twide tfuzz tcorrupt tlarge
+          # (the shared library is linked with SHLIB_LD, which configure sets to
+          # g++ -shared whatever CXX is: the compiler command is used for it)
+          make -j4 SHLIB_LD="${{ matrix.cxx || 'g++' }} -shared" libmk4.so regress twide tfuzz tcorrupt tlarge
       - name: tests
         working-directory: build
-        run: make test
+        run: make SHLIB_LD="${{ matrix.cxx || 'g++' }} -shared" test
       - name: datafile of over 4 Gb
         if: matrix.large != ''
         working-directory: build
