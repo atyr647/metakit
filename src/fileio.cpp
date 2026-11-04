@@ -6,6 +6,17 @@
  * Implementation of c4_FileStrategy and c4_FileStream
  */
 
+// Large file support must be requested before any system header is read,
+// it makes off_t, fseeko, ftello and mmap work with 64-bit offsets.
+#if !defined (_WIN32)
+#ifndef _FILE_OFFSET_BITS
+#define _FILE_OFFSET_BITS 64
+#endif 
+#ifndef _LARGEFILE_SOURCE
+#define _LARGEFILE_SOURCE 1
+#endif 
+#endif 
+
 #include "header.h"
 #include "mk4io.h"
 
@@ -163,6 +174,33 @@ static void FinalizeIO() {
 #endif 
 
 /////////////////////////////////////////////////////////////////////////////
+//
+//  Seek and tell with 64-bit file positions, where the platform has them.
+//  Without that, positions beyond 2 Gb simply cannot be reached.
+
+#if defined (q4_CARBON) && q4_CARBON
+#define f4_seek(f,p,w)  fseek(f, (long)(p), w)
+#define f4_tell(f)    ((t4_fpos)ftell(f))
+#elif q4_WIN32 && defined (_MSC_VER) && _MSC_VER >= 1400
+#define f4_seek(f,p,w)  _fseeki64(f, (__int64)(p), w)
+#define f4_tell(f)    ((t4_fpos)_ftelli64(f))
+#elif q4_WIN32 && defined (__MINGW32__)
+#define f4_seek(f,p,w)  fseeko64(f, (off64_t)(p), w)
+#define f4_tell(f)    ((t4_fpos)ftello64(f))
+#elif q4_UNIX
+#define f4_seek(f,p,w)  fseeko(f, (off_t)(p), w)
+#define f4_tell(f)    ((t4_fpos)ftello(f))
+#else 
+#define f4_seek(f,p,w)  fseek(f, (long)(p), w)
+#define f4_tell(f)    ((t4_fpos)ftell(f))
+#endif 
+
+// a mapping must fit in the address space of this process
+static bool f4_FitsInMemory(t4_fpos len_) {
+  return (t4_fpos)(size_t)len_ == len_;
+}
+
+/////////////////////////////////////////////////////////////////////////////
 
 #if q4_CHECK
 #include <stdlib.h>
@@ -221,15 +259,15 @@ bool c4_FileStrategy::IsValid()const {
   return _file != 0;
 }
 
-t4_i32 c4_FileStrategy::FileSize() {
+t4_fpos c4_FileStrategy::FileSize() {
   d4_assert(_file != 0);
 
-  long size =  - 1;
+  t4_fpos size =  - 1;
 
-  long old = ftell(_file);
-  if (old >= 0 && fseek(_file, 0, 2) == 0) {
-    long pos = ftell(_file);
-    if (fseek(_file, old, 0) == 0)
+  t4_fpos old = f4_tell(_file);
+  if (old >= 0 && f4_seek(_file, 0, 2) == 0) {
+    t4_fpos pos = f4_tell(_file);
+    if (f4_seek(_file, old, 0) == 0)
       size = pos;
   }
 
@@ -255,15 +293,21 @@ void c4_FileStrategy::ResetFileMapping() {
   }
 
   if (_file != 0) {
-    t4_i32 len = FileSize();
+    t4_fpos len = FileSize();
 
-    if (len > 0) {
+    if (len > 0 && f4_FitsInMemory(len)) {
       FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(_file)));
+#if q4_FPOS64
+      const DWORD lenHi = (DWORD)(len >> 32);
+#else 
+      const DWORD lenHi = 0;
+#endif 
       HANDLE h = ::CreateFileMapping((HANDLE)_get_osfhandle(_fileno(_file)), 0,
-        PAGE_READONLY, 0, len, 0);
+        PAGE_READONLY, lenHi, (DWORD)(len &0xFFFFFFFF), 0);
 
       if (h) {
-        _mapStart = (t4_byte*)::MapViewOfFile(h, FILE_MAP_READ, 0, 0, len);
+        _mapStart = (t4_byte*)::MapViewOfFile(h, FILE_MAP_READ, 0, 0,
+          (size_t)len);
 
         if (_mapStart != 0) {
           _mapStart += _baseOffset;
@@ -278,17 +322,17 @@ void c4_FileStrategy::ResetFileMapping() {
 #elif HAVE_MMAP && !NO_MMAP
   if (_mapStart != 0) {
     _mapStart -= _baseOffset;
-    munmap((char*)_mapStart, _baseOffset + _dataSize); // also loses const
+    munmap((char*)_mapStart, (size_t)(_baseOffset + _dataSize)); // loses const
     _mapStart = 0;
     _dataSize = 0;
   }
 
   if (_file != 0) {
-    t4_i32 len = FileSize();
+    t4_fpos len = FileSize();
 
-    if (len > 0) {
-      _mapStart = (const t4_byte*)mmap(0, len, PROT_READ, MAP_SHARED, fileno
-        (_file), 0);
+    if (len > 0 && f4_FitsInMemory(len)) {
+      _mapStart = (const t4_byte*)mmap(0, (size_t)len, PROT_READ, MAP_SHARED,
+        fileno(_file), 0);
       if (_mapStart != (void*) - 1L) {
         _mapStart += _baseOffset;
         _dataSize = len - _baseOffset;
@@ -360,16 +404,16 @@ bool c4_FileStrategy::DataOpen(const char *fname_, int mode_) {
   return false;
 }
 
-int c4_FileStrategy::DataRead(t4_i32 pos_, void *buf_, int len_) {
+int c4_FileStrategy::DataRead(t4_fpos pos_, void *buf_, int len_) {
   d4_assert(_baseOffset + pos_ >= 0);
   d4_assert(_file != 0);
 
   //printf("DataRead at %d len %d\n", pos_, len_);
-  return fseek(_file, _baseOffset + pos_, 0) != 0 ?  - 1: (int)fread(buf_, 1,
-    len_, _file);
+  return f4_seek(_file, _baseOffset + pos_, 0) != 0 ?  - 1: (int)fread(buf_,
+    1, len_, _file);
 }
 
-void c4_FileStrategy::DataWrite(t4_i32 pos_, const void *buf_, int len_) {
+void c4_FileStrategy::DataWrite(t4_fpos pos_, const void *buf_, int len_) {
   d4_assert(_baseOffset + pos_ >= 0);
   d4_assert(_file != 0);
 #if 0
@@ -401,7 +445,7 @@ void c4_FileStrategy::DataWrite(t4_i32 pos_, const void *buf_, int len_) {
   buf_ = memcpy(tempBuf, buf_, len_);
 #endif 
 
-  if (fseek(_file, _baseOffset + pos_, 0) != 0 || (int)fwrite(buf_, 1, len_,
+  if (f4_seek(_file, _baseOffset + pos_, 0) != 0 || (int)fwrite(buf_, 1, len_,
     _file) != len_) {
     _failure = ferror(_file);
     d4_assert(_failure != 0);
@@ -409,7 +453,7 @@ void c4_FileStrategy::DataWrite(t4_i32 pos_, const void *buf_, int len_) {
   }
 }
 
-void c4_FileStrategy::DataCommit(t4_i32 limit_) {
+void c4_FileStrategy::DataCommit(t4_fpos limit_) {
   d4_assert(_file != 0);
 
   if (fflush(_file) < 0) {

@@ -23,7 +23,7 @@ class c4_Strategy; // not defined here
 
 class c4_Column {
     c4_PtrArray _segments;
-    t4_i32 _position;
+    t4_fpos _position;
     t4_i32 _size;
     c4_Persist *_persist;
     t4_i32 _gap;
@@ -42,14 +42,14 @@ class c4_Column {
     //: Returns persistence manager for this column, or zero.
     c4_Strategy &Strategy()const;
     //: Returns the associated strategy pointer.
-    t4_i32 Position()const;
+    t4_fpos Position()const;
     //: Special access for the DUMP program.
     t4_i32 ColSize()const;
     //: Returns the number of bytes as stored on disk.
     bool IsDirty()const;
     //: Returns true if contents needs to be saved.
 
-    void SetLocation(t4_i32, t4_i32);
+    void SetLocation(t4_fpos, t4_i32);
     //: Sets the position and size of this column on file.
     void PullLocation(const t4_byte * &ptr_);
     //: Extract position and size of this column.
@@ -64,7 +64,7 @@ class c4_Column {
     //: Grows the buffer by inserting space.
     void Shrink(t4_i32, t4_i32);
     //: Shrinks the buffer by removing space.
-    void SaveNow(c4_Strategy &, t4_i32 pos_);
+    void SaveNow(c4_Strategy &, t4_fpos pos_);
     //: Save the buffer to file.
 
     const t4_byte *FetchBytes(t4_i32 pos_, int len_, c4_Bytes &buffer_, bool
@@ -78,6 +78,9 @@ class c4_Column {
 
     static t4_i32 PullValue(const t4_byte * &ptr_);
     static void PushValue(t4_byte * &ptr_, t4_i32 v_);
+    // same encoding, but for positions in a datafile, which may be wide
+    static t4_fpos PullValue64(const t4_byte * &ptr_);
+    static void PushValue64(t4_byte * &ptr_, t4_fpos v_);
 
     void InsertData(t4_i32 index_, t4_i32 count_, bool clear_);
     void RemoveData(t4_i32 index_, t4_i32 count_);

@@ -30,7 +30,7 @@ d4_inline c4_Persist* c4_Column::Persist() const
   return _persist;
 }
 
-d4_inline t4_i32 c4_Column::Position() const
+d4_inline t4_fpos c4_Column::Position() const
 {
   return _position;
 }

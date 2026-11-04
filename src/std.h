@@ -59,6 +59,7 @@ template <class T> class c4_ArrayT {
 };
 
 typedef c4_ArrayT < t4_i32 > c4_DWordArray;
+typedef c4_ArrayT < t4_fpos > c4_FposArray;
 typedef c4_ArrayT < void * > c4_PtrArray;
 typedef c4_ArrayT < c4_String > c4_StringArray;
 

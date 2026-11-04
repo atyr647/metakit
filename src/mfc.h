@@ -26,6 +26,7 @@
 typedef class CString c4_String;
 typedef class CPtrArray c4_PtrArray;
 typedef class CDWordArray c4_DWordArray;
+typedef CArray < t4_fpos, t4_fpos > c4_FposArray;
 typedef class CStringArray c4_StringArray;
 
 // MSVC 1.52 thinks a typedef has no constructor, so use a define instead

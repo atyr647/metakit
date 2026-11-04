@@ -40,15 +40,15 @@ class c4_FileStrategy: public c4_Strategy {
     /// Open a data file by name
     virtual bool DataOpen(const char *fileName_, int mode_);
     /// Read a number of bytes
-    virtual int DataRead(t4_i32 pos_, void *buffer_, int length_);
+    virtual int DataRead(t4_fpos pos_, void *buffer_, int length_);
     /// Write a number of bytes, return true if successful
-    virtual void DataWrite(t4_i32 pos_, const void *buffer_, int length_);
+    virtual void DataWrite(t4_fpos pos_, const void *buffer_, int length_);
     /// Flush and truncate file
-    virtual void DataCommit(t4_i32 newSize_);
+    virtual void DataCommit(t4_fpos newSize_);
     /// Support for memory-mapped files
     virtual void ResetFileMapping();
     /// Report total size of the datafile
-    virtual t4_i32 FileSize();
+    virtual t4_fpos FileSize();
     /// Return a good value to use as fresh generation counter
     virtual t4_i32 FreshGeneration();
 

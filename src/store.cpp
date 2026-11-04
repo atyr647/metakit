@@ -402,8 +402,19 @@ void c4_Storage::SaveTo(c4_Stream &stream_) {
 }
 
 t4_i32 c4_Storage::FreeSpace(t4_i32 *bytes_) {
+  // the total may be too large for 32 bits, in which case it is clipped
+  t4_fpos total = 0;
+  t4_i32 n = Persist()->FreeBytes(bytes_ != 0 ? &total : 0);
+  if (bytes_ != 0 && n >= 0)
+    *bytes_ = total > 0x7fffffff ? 0x7fffffff: (t4_i32)total;
+  return n;
+}
+
+#if q4_FPOS64
+t4_i32 c4_Storage::FreeSpace(t4_fpos *bytes_) {
   return Persist()->FreeBytes(bytes_);
 }
+#endif 
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -498,13 +509,13 @@ bool c4_StreamStrategy::IsValid()const {
   return true;
 }
 
-int c4_StreamStrategy::DataRead(t4_i32 pos_, void *buffer_, int length_) {
+int c4_StreamStrategy::DataRead(t4_fpos pos_, void *buffer_, int length_) {
   if (_buffer != 0) {
     d4_assert(pos_ <= _buflen);
     _position = pos_ + _baseOffset;
 
     if (length_ > _buflen - _position)
-      length_ = _buflen - _position;
+      length_ = (int)(_buflen - _position);
     if (length_ > 0)
       memcpy(buffer_, _buffer + _position, length_);
   } else {
@@ -516,7 +527,7 @@ int c4_StreamStrategy::DataRead(t4_i32 pos_, void *buffer_, int length_) {
   return length_;
 }
 
-void c4_StreamStrategy::DataWrite(t4_i32 pos_, const void *buffer_, int length_)
+void c4_StreamStrategy::DataWrite(t4_fpos pos_, const void *buffer_, int length_)
   {
   if (_buffer != 0) {
     d4_assert(pos_ <= _buflen);
@@ -524,7 +535,7 @@ void c4_StreamStrategy::DataWrite(t4_i32 pos_, const void *buffer_, int length_)
 
     int n = length_;
     if (n > _buflen - _position)
-      n = _buflen - _position;
+      n = (int)(_buflen - _position);
     if (n > 0)
       memcpy(_buffer + _position, buffer_, n);
   } else {
@@ -536,7 +547,7 @@ void c4_StreamStrategy::DataWrite(t4_i32 pos_, const void *buffer_, int length_)
   _position += length_;
 }
 
-t4_i32 c4_StreamStrategy::FileSize() {
+t4_fpos c4_StreamStrategy::FileSize() {
   return _position;
 }
 

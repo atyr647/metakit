@@ -385,8 +385,8 @@ void c4_HandlerSeq::ExchangeEntries(int srcPos_, c4_HandlerSeq &dst_, int
         c4_Column *c1 = h1.GetNthMemoCol(srcPos_, true);
         c4_Column *c2 = h2.GetNthMemoCol(dstPos_, true);
 
-        t4_i32 p1 = c1 ? c1->Position(): 0;
-        t4_i32 p2 = c2 ? c2->Position(): 0;
+        t4_fpos p1 = c1 ? c1->Position(): 0;
+        t4_fpos p2 = c2 ? c2->Position(): 0;
 
         t4_i32 s1 = c1 ? c1->ColSize(): 0;
         t4_i32 s2 = c2 ? c2->ColSize(): 0;

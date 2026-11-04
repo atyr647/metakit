@@ -207,10 +207,13 @@ typedef long t4_i32; // if longs aren't 64b, then they are 32b
 
 #if q4_LONG64           // choose a way to represent 64b integers
 typedef long t4_i64;
+#define q4_FPOS64 1
 #elif defined (LONG_LONG)
 typedef LONG_LONG t4_i64;
+#define q4_FPOS64 1
 #elif HAVE_LONG_LONG
 typedef long long t4_i64;
+#define q4_FPOS64 1
 #else 
 struct t4_i64 {
     long l1;
@@ -218,6 +221,17 @@ struct t4_i64 {
 };
 bool operator == (const t4_i64 a_, const t4_i64 b_);
 bool operator < (const t4_i64 a_, const t4_i64 b_);
+#define q4_FPOS64 0
+#endif 
+
+// Positions in and sizes of datafiles use a type of their own.  With 64b
+// integers available, datafiles can grow far beyond 2 Gb.  Without them,
+// this is just a 32b integer, and the old limit on the size remains.
+// Note that the size of a single column (or memo) is still a 32b integer.
+#if q4_FPOS64
+typedef t4_i64 t4_fpos;
+#else 
+typedef t4_i32 t4_fpos;
 #endif 
 
 //---------------------------------------------------------------------------
@@ -552,6 +566,10 @@ class c4_Storage: public c4_View {
     void SaveTo(c4_Stream &);
 
     t4_i32 FreeSpace(t4_i32 *bytes_ = 0);
+#if q4_FPOS64
+    /// Count the free blocks and report the total number of free bytes
+    t4_i32 FreeSpace(t4_fpos *bytes_);
+#endif 
 
     //DROPPED: c4_Storage (const char* filename_, const char* description_);
     //DROPPED: c4_View Store(const char* name_, const c4_View& view_);
@@ -788,15 +806,15 @@ class c4_Strategy {
     virtual ~c4_Strategy();
 
     virtual bool IsValid()const;
-    virtual int DataRead(t4_i32, void *, int);
-    virtual void DataWrite(t4_i32, const void *, int);
-    virtual void DataCommit(t4_i32);
+    virtual int DataRead(t4_fpos, void *, int);
+    virtual void DataWrite(t4_fpos, const void *, int);
+    virtual void DataCommit(t4_fpos);
     virtual void ResetFileMapping();
-    virtual t4_i32 FileSize();
+    virtual t4_fpos FileSize();
     virtual t4_i32 FreshGeneration();
 
-    void SetBase(t4_i32);
-    t4_i32 EndOfData(t4_i32 =  - 1);
+    void SetBase(t4_fpos);
+    t4_fpos EndOfData(t4_fpos =  - 1);
 
     /// True if the storage format is not native (default is false)
     bool _bytesFlipped;
@@ -805,11 +823,11 @@ class c4_Strategy {
     /// First byte in file mapping, zero if not active
     const t4_byte *_mapStart;
     /// Number of bytes filled with active data
-    t4_i32 _dataSize;
+    t4_fpos _dataSize;
     /// All file positions are relative to this offset
-    t4_i32 _baseOffset;
+    t4_fpos _baseOffset;
     /// The root position of the shallow tree walks
-    t4_i32 _rootPos;
+    t4_fpos _rootPos;
     /// The size of the root column
     t4_i32 _rootLen;
 };

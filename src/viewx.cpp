@@ -611,7 +611,7 @@ c4_Strategy::~c4_Strategy() {
 }
 
 /// Read a number of bytes
-int c4_Strategy::DataRead(t4_i32, void *, int) {
+int c4_Strategy::DataRead(t4_fpos, void *, int) {
   /*
   if (_mapStart != 0 && pos_ + length_ <= _dataSize)
   {
@@ -624,18 +624,18 @@ int c4_Strategy::DataRead(t4_i32, void *, int) {
 }
 
 /// Write a number of bytes, return true if successful
-void c4_Strategy::DataWrite(t4_i32, const void *, int) {
+void c4_Strategy::DataWrite(t4_fpos, const void *, int) {
   ++_failure;
 }
 
 /// Flush and truncate file
-void c4_Strategy::DataCommit(t4_i32){}
+void c4_Strategy::DataCommit(t4_fpos){}
 
 /// Override to support memory-mapped files
 void c4_Strategy::ResetFileMapping(){}
 
 /// Report total size of the datafile
-t4_i32 c4_Strategy::FileSize() {
+t4_fpos c4_Strategy::FileSize() {
   return _dataSize;
 }
 
@@ -645,8 +645,8 @@ t4_i32 c4_Strategy::FreshGeneration() {
 }
 
 /// Define the base offset where data is stored
-void c4_Strategy::SetBase(t4_i32 base_) {
-  t4_i32 off = base_ - _baseOffset;
+void c4_Strategy::SetBase(t4_fpos base_) {
+  t4_fpos off = base_ - _baseOffset;
   _baseOffset = base_;
   _dataSize -= off;
   if (_mapStart != 0)
@@ -663,14 +663,14 @@ file marks is in one place within the loop.
  */
 
 /// Scan datafile head/tail markers, return logical end of data
-t4_i32 c4_Strategy::EndOfData(t4_i32 end_) {
+t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
   enum {
     kStateAtEnd, kStateCommit, kStateHead, kStateOld, kStateDone
   };
 
-  t4_i32 pos = (end_ >= 0 ? end_ : FileSize()) - _baseOffset;
-  t4_i32 last = pos;
-  t4_i32 rootPos = 0;
+  t4_fpos pos = (end_ >= 0 ? end_ : FileSize()) - _baseOffset;
+  t4_fpos last = pos;
+  t4_fpos rootPos = 0;
   t4_i32 rootLen =  - 1; // impossible value, flags old-style header
   t4_byte mark[8];
 

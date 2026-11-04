@@ -107,6 +107,47 @@ d4_inline t4_i32& c4_DWordArray::ElementAt(int nIndex)
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// c4_FposArray
+
+d4_inline c4_FposArray::c4_FposArray ()
+{ 
+}
+
+d4_inline c4_FposArray::~c4_FposArray ()
+{ 
+}
+
+d4_inline int c4_FposArray::Off(int n_)
+{
+  return n_ * sizeof (t4_fpos); 
+}
+
+d4_inline int c4_FposArray::GetSize() const
+{ 
+  return _vector.GetLength() / sizeof (t4_fpos); 
+}
+
+d4_inline void c4_FposArray::SetSize(int nNewSize, int)
+{ 
+  _vector.SetLength(Off(nNewSize)); 
+}
+
+d4_inline t4_fpos c4_FposArray::GetAt(int nIndex) const
+{ 
+  return *(const t4_fpos*) _vector.GetData(Off(nIndex)); 
+}
+
+d4_inline void c4_FposArray::SetAt(int nIndex, t4_fpos newElement)
+{ 
+  *(t4_fpos*) _vector.GetData(Off(nIndex)) = newElement; 
+}
+
+d4_inline t4_fpos& c4_FposArray::ElementAt(int nIndex)
+{ 
+  return *(t4_fpos*) _vector.GetData(Off(nIndex)); 
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // c4_StringArray
 
 d4_inline c4_StringArray::c4_StringArray ()

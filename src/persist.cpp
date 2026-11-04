@@ -25,8 +25,8 @@ class c4_FileMark {
 
   public:
     c4_FileMark();
-    c4_FileMark(t4_i32 pos_, bool flipped_, bool extend_);
-    c4_FileMark(t4_i32 pos_, int len_);
+    c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_);
+    c4_FileMark(t4_fpos pos_, int len_);
 
     t4_i32 Offset()const;
     t4_i32 OldOffset()const;
@@ -42,7 +42,7 @@ c4_FileMark::c4_FileMark() {
   d4_assert(sizeof *this == 8);
 }
 
-c4_FileMark::c4_FileMark(t4_i32 pos_, bool flipped_, bool extend_) {
+c4_FileMark::c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_) {
   d4_assert(sizeof *this == 8);
   *(short*)_data = flipped_ ? kReverseFormat : kStorageFormat;
   _data[2] = extend_ ? 0x0A : 0x1A;
@@ -53,7 +53,7 @@ c4_FileMark::c4_FileMark(t4_i32 pos_, bool flipped_, bool extend_) {
   d4_assert(p == _data + sizeof _data);
 }
 
-c4_FileMark::c4_FileMark(t4_i32 pos_, int len_) {
+c4_FileMark::c4_FileMark(t4_fpos pos_, int len_) {
   d4_assert(sizeof *this == 8);
   t4_byte *p = _data;
   *p++ = 0x80;
@@ -94,25 +94,33 @@ bool c4_FileMark::IsFlipped()const {
 
 /////////////////////////////////////////////////////////////////////////////
 
-class c4_Allocator: public c4_DWordArray {
+// The allocator treats everything from this position on as free space.
+// It is far beyond what the file marks can express, see SaveIt below.
+#if q4_FPOS64
+static const t4_fpos kEndOfSpace = (t4_fpos)1 << 62;
+#else 
+static const t4_fpos kEndOfSpace = 0x7fffffff;
+#endif 
+
+class c4_Allocator: public c4_FposArray {
   public:
     c4_Allocator();
 
-    void Initialize(t4_i32 first_ = 1);
+    void Initialize(t4_fpos first_ = 1);
     void Assign(const c4_Allocator &other_);
 
-    t4_i32 AllocationLimit()const;
+    t4_fpos AllocationLimit()const;
 
-    t4_i32 Allocate(t4_i32 len_);
-    void Occupy(t4_i32 pos_, t4_i32 len_);
-    void Release(t4_i32 pos_, t4_i32 len_);
+    t4_fpos Allocate(t4_fpos len_);
+    void Occupy(t4_fpos pos_, t4_fpos len_);
+    void Release(t4_fpos pos_, t4_fpos len_);
     void Dump(const char *str_);
-    t4_i32 FreeCounts(t4_i32 *bytes_ = 0);
+    t4_i32 FreeCounts(t4_fpos *bytes_ = 0);
 
   private:
-    int Locate(t4_i32 pos_)const;
-    void InsertPair(int i_, t4_i32 from_, t4_i32 to_);
-    t4_i32 ReduceFrags(int goal_, int sHi_, int sLo_);
+    int Locate(t4_fpos pos_)const;
+    void InsertPair(int i_, t4_fpos from_, t4_fpos to_);
+    t4_fpos ReduceFrags(int goal_, int sHi_, int sLo_);
 };
 
 /////////////////////////////////////////////////////////////////////////////
@@ -144,18 +152,17 @@ c4_Allocator::c4_Allocator() {
   Initialize();
 }
 
-void c4_Allocator::Initialize(t4_i32 first_) {
+void c4_Allocator::Initialize(t4_fpos first_) {
   SetSize(0, 1000); // empty, and growing in large chunks 
   Add(0); // fake block at start
   Add(0); // ... only used to avoid merging
 
   // if occupied, add a tiny free slot at the end, else add entire range
-  const t4_i32 kMaxInt = 0x7fffffff;
   if (first_ == 0)
-    first_ = kMaxInt;
+    first_ = kEndOfSpace;
 
   Add(first_); // start at a nicely aligned position
-  Add(kMaxInt); // ... there is no limit on file size
+  Add(kEndOfSpace); // ... practically no limit on file size
 }
 
 void c4_Allocator::Assign(const c4_Allocator &other_) {
@@ -165,13 +172,13 @@ void c4_Allocator::Assign(const c4_Allocator &other_) {
     SetAt(i, other_.GetAt(i));
 }
 
-t4_i32 c4_Allocator::Allocate(t4_i32 len_) {
+t4_fpos c4_Allocator::Allocate(t4_fpos len_) {
   // zero arg is ok, it simply returns first allocatable position   
   // the free ranges are [GetAt(i), GetAt(i+1)), compare using the size of
   // the range, since "start + len_" could overflow the 32-bit range
   for (int i = 2; i < GetSize(); i += 2)
   if (GetAt(i + 1) - GetAt(i) >= len_) {
-    t4_i32 pos = GetAt(i);
+    t4_fpos pos = GetAt(i);
     if (GetAt(i + 1) - pos > len_)
       ElementAt(i) += len_;
     else
@@ -183,7 +190,7 @@ t4_i32 c4_Allocator::Allocate(t4_i32 len_) {
   return  - 1;
 }
 
-void c4_Allocator::Occupy(t4_i32 pos_, t4_i32 len_) {
+void c4_Allocator::Occupy(t4_fpos pos_, t4_fpos len_) {
   d4_assert(pos_ > 0);
   // note that zero size simply checks if there is any space to extend
 
@@ -192,15 +199,15 @@ void c4_Allocator::Occupy(t4_i32 pos_, t4_i32 len_) {
 
   if (i % 2) {
     // allocation is not at start of free block
-    d4_assert((t4_i32)GetAt(i - 1) < pos_);
+    d4_assert(GetAt(i - 1) < pos_);
 
-    if ((t4_i32)GetAt(i) == pos_ + len_)
+    if (GetAt(i) == pos_ + len_)
     // allocate from end of free block
       SetAt(i, pos_);
     else
     // split free block in two
       InsertPair(i, pos_, pos_ + len_);
-  } else if ((t4_i32)GetAt(i) == pos_)
+  } else if (GetAt(i) == pos_)
   /*
   This side of the if used to be unconditional, but that was
   incorrect if ReduceFrags gets called (which only happens with
@@ -212,7 +219,7 @@ void c4_Allocator::Occupy(t4_i32 pos_, t4_i32 len_) {
    */
    {
     // else extend tail of allocated area
-    if ((t4_i32)GetAt(i + 1) > pos_ + len_)
+    if (GetAt(i + 1) > pos_ + len_)
       ElementAt(i) += len_;
     // move start of next free up
     else
@@ -221,15 +228,15 @@ void c4_Allocator::Occupy(t4_i32 pos_, t4_i32 len_) {
   }
 }
 
-void c4_Allocator::Release(t4_i32 pos, t4_i32 len) {
+void c4_Allocator::Release(t4_fpos pos, t4_fpos len) {
   int i = Locate(pos + len);
   d4_assert(0 < i && i < GetSize());
   d4_assert(i % 2 == 0); // don't release inside a free block
 
-  if ((t4_i32)GetAt(i) == pos)
+  if (GetAt(i) == pos)
   // move start of next free down 
     ElementAt(i) -= len;
-  else if ((t4_i32)GetAt(i - 1) == pos)
+  else if (GetAt(i - 1) == pos)
   // move end of previous free up
     ElementAt(i - 1) += len;
   else
@@ -241,37 +248,37 @@ void c4_Allocator::Release(t4_i32 pos, t4_i32 len) {
     RemoveAt(i - 1, 2);
 }
 
-t4_i32 c4_Allocator::AllocationLimit()const {
+t4_fpos c4_Allocator::AllocationLimit()const {
   d4_assert(GetSize() >= 2);
 
   return GetAt(GetSize() - 2);
 }
 
-int c4_Allocator::Locate(t4_i32 pos)const {
+int c4_Allocator::Locate(t4_fpos pos)const {
   int lo = 0, hi = GetSize() - 1;
 
   while (lo < hi) {
     int i = (lo + hi) / 2;
-    if (pos < (t4_i32)GetAt(i))
+    if (pos < GetAt(i))
       hi = i - 1;
-    else if (pos > (t4_i32)GetAt(i))
+    else if (pos > GetAt(i))
       lo = i + 1;
     else
       return i;
   }
 
-  return lo < GetSize() && pos > (t4_i32)GetAt(lo) ? lo + 1: lo;
+  return lo < GetSize() && pos > GetAt(lo) ? lo + 1: lo;
 }
 
-void c4_Allocator::InsertPair(int i_, t4_i32 from_, t4_i32 to_) {
+void c4_Allocator::InsertPair(int i_, t4_fpos from_, t4_fpos to_) {
   d4_assert(0 < i_);
   d4_assert(i_ < GetSize());
 
   d4_assert(from_ < to_);
-  d4_assert((t4_i32)GetAt(i_ - 1) < from_);
+  d4_assert(GetAt(i_ - 1) < from_);
   //!d4_assert(to_ < GetAt(i_));
 
-  if (to_ >= (t4_i32)GetAt(i_))
+  if (to_ >= GetAt(i_))
     return ;
   // ignore 2nd allocation of used area
 
@@ -283,24 +290,24 @@ void c4_Allocator::InsertPair(int i_, t4_i32 from_, t4_i32 to_) {
     ReduceFrags(5000, 12, 6);
 }
 
-t4_i32 c4_Allocator::ReduceFrags(int goal_, int sHi_, int sLo_) {
+t4_fpos c4_Allocator::ReduceFrags(int goal_, int sHi_, int sLo_) {
   // drastic fail-safe measure: remove small gaps if vec gets too long
   // this will cause some lost free space but avoids array overflow
   // the lost space will most probably be re-used after the next commit
 
   int limit = GetSize() - 2;
-  t4_i32 loss = 0;
+  t4_fpos loss = 0;
 
   // go through all entries and remove gaps under the given threshold
   for (int shift = sHi_; shift >= sLo_; --shift) {
     // the threshold is a fraction of the current size of the arena
-    t4_i32 threshold = AllocationLimit() >> shift;
+    t4_fpos threshold = AllocationLimit() >> shift;
     if (threshold == 0)
       continue;
 
     int n = 2;
     for (int i = n; i < limit; i += 2)
-    if ((t4_i32)GetAt(i + 1) - (t4_i32)GetAt(i) > threshold) {
+    if (GetAt(i + 1) - GetAt(i) > threshold) {
       SetAt(n++, GetAt(i));
       SetAt(n++, GetAt(i + 1));
     } else
@@ -328,7 +335,7 @@ t4_i32 c4_Allocator::ReduceFrags(int goal_, int sHi_, int sLo_) {
 void c4_Allocator::Dump(const char *str_) {
   fprintf(stderr, "c4_Allocator::Dump, %d entries <%s>\n", GetSize(), str_);
   for (int i = 2; i < GetSize(); i += 2)
-    fprintf(stderr, "  %10ld .. %ld\n", GetAt(i - 1), GetAt(i));
+    fprintf(stderr, "  %10ld .. %ld\n", (long)GetAt(i - 1), (long)GetAt(i));
   fprintf(stderr, "END\n");
 }
 
@@ -338,9 +345,9 @@ void c4_Allocator::Dump(const char *str_){}
 
 #endif 
 
-t4_i32 c4_Allocator::FreeCounts(t4_i32 *bytes_) {
+t4_i32 c4_Allocator::FreeCounts(t4_fpos *bytes_) {
   if (bytes_ != 0) {
-    t4_i32 total = 0;
+    t4_fpos total = 0;
     for (int i = 2; i < GetSize() - 2; i += 2)
       total += GetAt(i + 1) - GetAt(i);
     *bytes_ = total;
@@ -352,12 +359,12 @@ t4_i32 c4_Allocator::FreeCounts(t4_i32 *bytes_) {
 
 class c4_Differ {
   public:
-    c4_Differ(c4_Storage &storage_);
+    c4_Differ(c4_Storage &storage_, bool wide_);
     ~c4_Differ();
 
     int NewDiffID();
     void CreateDiff(int id_, c4_Column &col_);
-    t4_i32 BaseOfDiff(int id_);
+    t4_fpos BaseOfDiff(int id_);
     void ApplyDiff(int id_, c4_Column &col_)const;
 
     void GetRoot(c4_Bytes &buffer_);
@@ -368,19 +375,39 @@ class c4_Differ {
 
   private:
     void AddEntry(t4_i32, t4_i32, const c4_Bytes &);
+    void SetLayout(bool wide_);
+
+    // positions in a datafile of over 2 Gb do not fit the original layout,
+    // for those a second int holds the high bits.  The layout of the aside
+    // file does not change as long as it only refers to smaller datafiles.
+    bool _wide;
 
     c4_ViewProp pCols; //  column info:
-    c4_IntProp pOrig; //    original position
+    c4_IntProp pOrig; //    original position (low 32 bits)
+    c4_IntProp pOrigHi; //    ... and the high bits, only if _wide
     c4_ViewProp pDiff; //    difference chunks:
     c4_IntProp pKeep; //      offset
     c4_IntProp pResize; //      length
     c4_BytesProp pBytes; //      data
 };
 
-c4_Differ::c4_Differ(c4_Storage &storage_): _storage(storage_), pCols("_C"),
-  pOrig("_O"), pDiff("_D"), pKeep("_K"), pResize("_R"), pBytes("_B") {
+c4_Differ::c4_Differ(c4_Storage &storage_, bool wide_): _storage(storage_),
+  _wide(false), pCols("_C"), pOrig("_O"), pOrigHi("_Q"), pDiff("_D"), pKeep
+  ("_K"), pResize("_R"), pBytes("_B") {
+  // never drop the high bits of an aside file which already has them
+  const char *desc = _storage.Description("_C");
+  if (desc != 0 && strstr(desc, "_Q:") != 0)
+    wide_ = true;
+
+  SetLayout(wide_);
+}
+
+void c4_Differ::SetLayout(bool wide_) {
+  _wide = wide_;
+
   // weird names, to avoid clashing with existing ones (capitalization!)
-  _diffs = _storage.GetAs("_C[_O:I,_D[_K:I,_R:I,_B:B]]");
+  _diffs = _storage.GetAs(_wide ? "_C[_O:I,_Q:I,_D[_K:I,_R:I,_B:B]]":
+    "_C[_O:I,_D[_K:I,_R:I,_B:B]]");
 }
 
 c4_Differ::~c4_Differ() {
@@ -447,13 +474,30 @@ void c4_Differ::CreateDiff(int id_, c4_Column &col_) {
 #endif 
   pDiff(_diffs[id_]) = _temp;
 
-  pOrig(_diffs[id_]) = col_.Position();
+  // a position which does not fit an int is stored in two halves
+  const t4_fpos pos = col_.Position();
+#if q4_FPOS64
+  if (!_wide && pos != (t4_fpos)(t4_i32)pos)
+    SetLayout(true);
+  pOrig(_diffs[id_]) = (t4_i32)(pos &0xFFFFFFFF);
+  if (_wide)
+    pOrigHi(_diffs[id_]) = (t4_i32)(pos >> 32);
+#else 
+  pOrig(_diffs[id_]) = pos;
+#endif 
 }
 
-t4_i32 c4_Differ::BaseOfDiff(int id_) {
+t4_fpos c4_Differ::BaseOfDiff(int id_) {
   d4_assert(0 <= id_ && id_ < _diffs.GetSize());
 
-  return pOrig(_diffs[id_]);
+  const t4_i32 lo = pOrig(_diffs[id_]);
+#if q4_FPOS64
+  if (_wide) {
+    const t4_i32 hi = pOrigHi(_diffs[id_]);
+    return (t4_fpos)hi *((t4_fpos)1 << 32) + ((t4_fpos)lo &0xFFFFFFFF);
+  }
+#endif 
+  return lo; 
 }
 
 void c4_Differ::ApplyDiff(int id_, c4_Column &col_)const {
@@ -571,15 +615,26 @@ void c4_SaveContext::StoreValue(t4_i32 v_) {
   c4_Column::PushValue(_curr, v_);
 }
 
+void c4_SaveContext::StoreValue64(t4_fpos v_) {
+  if (_walk == 0)
+    return ;
+
+  if (_curr + 10 >= _limit)
+    FlushBuffer();
+
+  d4_assert(_curr + 10 < _limit);
+  c4_Column::PushValue64(_curr, v_);
+}
+
 void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   c4_Bytes &rootWalk_) {
   d4_assert(_space != 0);
 
-  const t4_i32 size = _strategy.FileSize();
+  const t4_fpos size = _strategy.FileSize();
   if (_strategy._failure != 0)
     return ;
 
-  const t4_i32 end = _fullScan ? 0 : size - _strategy._baseOffset;
+  const t4_fpos end = _fullScan ? 0 : size - _strategy._baseOffset;
 
   if (_differ == 0) {
     if (_mode != 1)
@@ -623,7 +678,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   SetWalkBuffer(0);
   CommitColumn(walk);
 
-  t4_i32 limit = _nextSpace->AllocationLimit();
+  t4_fpos limit = _nextSpace->AllocationLimit();
   d4_assert(limit >= 8 || _differ != 0 || _strategy._failure != 0);
 
   // 2006-01-12 #2: catch file size exceeding 2 Gb, which is flagged either
@@ -671,7 +726,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   // this is the place where writing may start
 
   // figure out where the new file ends and write a skip tail there
-  t4_i32 end0 = end;
+  t4_fpos end0 = end;
 
   // true if the file need not be extended due to internal free space
   bool inPlace = end0 == limit - 8;
@@ -698,8 +753,8 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     // create a gap
   }
 
-  t4_i32 end1 = end0 + 8;
-  t4_i32 end2 = end1 + 8;
+  t4_fpos end1 = end0 + 8;
+  t4_fpos end2 = end1 + 8;
 
   if (!_fullScan && !inPlace) {
     c4_FileMark mark1(end0, 0);
@@ -712,7 +767,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
      * workaround it so simply accept the new end instead and rewrite.
      * Note that between these two writes, the file is in a bad state.
      */
-    t4_i32 realend = _strategy.FileSize() - _strategy._baseOffset;
+    t4_fpos realend = _strategy.FileSize() - _strategy._baseOffset;
     if (realend > end1) {
       end0 = limit = realend - 8;
       end1 = realend;
@@ -822,7 +877,7 @@ bool c4_SaveContext::CommitColumn(c4_Column &col_) {
   t4_i32 sz = col_.ColSize();
   StoreValue(sz);
   if (sz > 0) {
-    t4_i32 pos = col_.Position();
+    t4_fpos pos = col_.Position();
 
     if (_differ) {
       if (changed) {
@@ -854,7 +909,7 @@ bool c4_SaveContext::CommitColumn(c4_Column &col_) {
         col_.SetLocation(pos, sz);
     }
 
-    StoreValue(pos);
+    StoreValue64(pos);
   }
 
   return changed;
@@ -937,7 +992,8 @@ void c4_Persist::DoAutoCommit() {
 
 bool c4_Persist::SetAside(c4_Storage &aside_) {
   delete _differ;
-  _differ = d4_new c4_Differ(aside_);
+  // files beyond 2 Gb need the wider layout for positions in the aside file
+  _differ = d4_new c4_Differ(aside_, _strategy.FileSize() > 0x7fffffff);
   Rollback(false);
   return true; //! true if the generation matches
 }
@@ -997,7 +1053,7 @@ bool c4_Persist::Rollback(bool full_) {
 }
 
 bool c4_Persist::LoadIt(c4_Column &walk_) {
-  t4_i32 limit = _strategy.FileSize();
+  t4_fpos limit = _strategy.FileSize();
   if (_strategy._failure != 0)
     return false;
 
@@ -1106,7 +1162,7 @@ void c4_Persist::FetchOldLocation(c4_Column &col_) {
     col_.SetLocation(FetchOldValue(), sz);
 }
 
-t4_i32 c4_Persist::FreeBytes(t4_i32 *bytes_) {
+t4_i32 c4_Persist::FreeBytes(t4_fpos *bytes_) {
   return _space == 0 ?  - 1: _space->FreeCounts(bytes_);
 }
 
@@ -1132,7 +1188,7 @@ c4_HandlerSeq *c4_Persist::Load(c4_Stream *stream_) {
   //_oldStyle = head._data[3] == 0x80;
   d4_assert(!head.IsOldHeader());
 
-  t4_i32 limit = head.Offset();
+  t4_fpos limit = head.Offset();
 
   c4_StreamStrategy *strat = d4_new c4_StreamStrategy(limit);
   strat->_bytesFlipped = head.IsFlipped();
@@ -1182,7 +1238,7 @@ void c4_Persist::Save(c4_Stream *stream_, c4_HandlerSeq &root_) {
   ar.SaveIt(root_, 0, tempWalk);
 }
 
-t4_i32 c4_Persist::LookupAside(int id_) {
+t4_fpos c4_Persist::LookupAside(int id_) {
   d4_assert(_differ != 0);
 
   return _differ->BaseOfDiff(id_);
@@ -1194,7 +1250,7 @@ void c4_Persist::ApplyAside(int id_, c4_Column &col_) {
   _differ->ApplyDiff(id_, col_);
 }
 
-void c4_Persist::OccupySpace(t4_i32 pos_, t4_i32 len_) {
+void c4_Persist::OccupySpace(t4_fpos pos_, t4_fpos len_) {
   d4_assert(_mode != 1 || _space != 0);
 
   if (_space != 0)

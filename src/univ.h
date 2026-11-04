@@ -80,6 +80,30 @@ class c4_DWordArray {
     c4_BaseArray _vector;
 };
 
+// like c4_DWordArray, but each element is a file position (or size)
+class c4_FposArray {
+  public:
+    c4_FposArray();
+    ~c4_FposArray();
+
+    int GetSize()const;
+    void SetSize(int nNewSize, int nGrowBy =  - 1);
+
+    t4_fpos GetAt(int nIndex)const;
+    void SetAt(int nIndex, t4_fpos newElement);
+    t4_fpos &ElementAt(int nIndex);
+
+    int Add(t4_fpos newElement);
+
+    void InsertAt(int nIndex, t4_fpos newElement, int nCount = 1);
+    void RemoveAt(int nIndex, int nCount = 1);
+
+  private:
+    static int Off(int n_);
+
+    c4_BaseArray _vector;
+};
+
 class c4_StringArray {
   public:
     c4_StringArray();

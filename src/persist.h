@@ -37,7 +37,7 @@ class c4_SaveContext {
     bool _fullScan;
     int _mode;
 
-    c4_DWordArray _newPositions;
+    c4_FposArray _newPositions;
     int _nextPosIndex;
 
     t4_byte *_bufPtr;
@@ -54,6 +54,7 @@ class c4_SaveContext {
       &rootWalk_);
 
     void StoreValue(t4_i32 v_);
+    void StoreValue64(t4_fpos v_);
     bool CommitColumn(c4_Column &col_);
     void CommitSequence(c4_HandlerSeq &seq_, bool selfDesc_);
 
@@ -108,15 +109,15 @@ class c4_Persist {
     bool LoadIt(c4_Column &walk_);
     void LoadAll();
 
-    t4_i32 LookupAside(int id_);
+    t4_fpos LookupAside(int id_);
     void ApplyAside(int id_, c4_Column &col_);
 
-    void OccupySpace(t4_i32 pos_, t4_i32 len_);
+    void OccupySpace(t4_fpos pos_, t4_fpos len_);
 
     t4_i32 FetchOldValue();
     void FetchOldLocation(c4_Column &col_);
 
-    t4_i32 FreeBytes(t4_i32 *bytes_ = 0);
+    t4_i32 FreeBytes(t4_fpos *bytes_ = 0);
 
     static c4_HandlerSeq *Load(c4_Stream*);
     static void Save(c4_Stream *, c4_HandlerSeq &root_);

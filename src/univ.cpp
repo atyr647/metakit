@@ -131,6 +131,27 @@ void c4_DWordArray::RemoveAt(int nIndex, int nCount) {
 }
 
 /////////////////////////////////////////////////////////////////////////////
+// c4_FposArray
+
+int c4_FposArray::Add(t4_fpos newElement) {
+  int n = GetSize();
+  _vector.Grow(Off(n + 1));
+  SetAt(n, newElement);
+  return n;
+}
+
+void c4_FposArray::InsertAt(int nIndex, t4_fpos newElement, int nCount) {
+  _vector.InsertAt(Off(nIndex), nCount *sizeof(t4_fpos));
+
+  while (--nCount >= 0)
+    SetAt(nIndex++, newElement);
+}
+
+void c4_FposArray::RemoveAt(int nIndex, int nCount) {
+  _vector.RemoveAt(Off(nIndex), nCount *sizeof(t4_fpos));
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // c4_PtrArray
 
 int c4_PtrArray::Add(void *newElement) {

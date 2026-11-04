@@ -493,8 +493,8 @@ void c4_FormatB::OldDefine(char type_, c4_Persist &pers_) {
         if (fix)
 #endif 
          {
-          t4_i32 p1 = sizes.Position();
-          t4_i32 p2 = _data.Position();
+          t4_fpos p1 = sizes.Position();
+          t4_fpos p2 = _data.Position();
           _data.SetLocation(p1, s1);
           sizes.SetLocation(p2, s2);
         }

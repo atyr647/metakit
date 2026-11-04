@@ -218,9 +218,9 @@ class SiasStrategy: public c4_Strategy {
         _position = position_;
     }
 
-    virtual int DataRead(t4_i32 pos_, void *buffer_, int length_) {
+    virtual int DataRead(t4_fpos pos_, void *buffer_, int length_) {
         if (pos_ != ~0)
-          _position = pos_;
+          _position = (t4_i32)pos_;
 
         int i = 0;
 
@@ -238,9 +238,9 @@ class SiasStrategy: public c4_Strategy {
         return i;
     }
 
-    virtual void DataWrite(t4_i32 pos_, const void *buffer_, int length_) {
+    virtual void DataWrite(t4_fpos pos_, const void *buffer_, int length_) {
         if (pos_ != ~0)
-          _position = pos_;
+          _position = (t4_i32)pos_;
 
         c4_Bytes data(buffer_, length_);
         if (_memo(_view[_row]).Modify(data, _position))
@@ -249,9 +249,9 @@ class SiasStrategy: public c4_Strategy {
           ++_failure;
     }
 
-    virtual void DataCommit(t4_i32 newSize_) {
+    virtual void DataCommit(t4_fpos newSize_) {
         if (newSize_ > 0)
-          _memo(_view[_row]).Modify(c4_Bytes(), newSize_);
+          _memo(_view[_row]).Modify(c4_Bytes(), (t4_i32)newSize_);
     }
 
     virtual void ResetFileMapping() {

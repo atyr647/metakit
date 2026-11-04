@@ -137,7 +137,7 @@ void c4_Column::ReleaseAllSegments() {
 }
 
 //@func Define where data is on file, or setup buffers (opt cleared).
-void c4_Column::SetLocation(t4_i32 pos_, t4_i32 size_) {
+void c4_Column::SetLocation(t4_fpos pos_, t4_i32 size_) {
   d4_assert(size_ > 0 || pos_ == 0);
 
   ReleaseAllSegments();
@@ -159,7 +159,7 @@ void c4_Column::PullLocation(const t4_byte * &ptr_) {
   _size = PullValue(ptr_);
   _position = 0;
   if (_size > 0) {
-    _position = PullValue(ptr_);
+    _position = PullValue64(ptr_);
     if (_position > 0) {
       d4_assert(_persist != 0);
       _persist->OccupySpace(_position, _size);
@@ -215,7 +215,7 @@ void c4_Column::SetupSegments() {
   if (_position < 0) {
     // special aside id, figure out the real position
     d4_assert(_persist != 0);
-    id = ~_position;
+    id = (int)~_position;
     _position = _persist->LookupAside(id);
     d4_assert(_position >= 0);
   }
@@ -232,7 +232,7 @@ void c4_Column::SetupSegments() {
     }
   } else {
     int chunk = kSegMax;
-    t4_i32 pos = _position;
+    t4_fpos pos = _position;
 
     // allocate buffers, load them if necessary
     for (int i = 0; i < n; ++i) {
@@ -690,7 +690,7 @@ void c4_Column::FinishSlack() {
   }
 }
 
-void c4_Column::SaveNow(c4_Strategy &strategy_, t4_i32 pos_) {
+void c4_Column::SaveNow(c4_Strategy &strategy_, t4_fpos pos_) {
   if (_segments.GetSize() == 0)
     SetupSegments();
 
@@ -778,6 +778,48 @@ void c4_Column::PushValue(t4_byte * &ptr_, t4_i32 v_) {
   do {
     n += 7;
   } while ((v_ >> n) && n < 32);
+
+  while (n) {
+    n -= 7;
+    t4_byte b = (t4_byte)((v_ >> n) &0x7F);
+    if (!n)
+      b |= 0x80;
+    // set bit 7 on the last byte
+    *ptr_++ = b;
+  }
+}
+
+/*
+The 64-bit versions use the very same encoding, so for values which fit in
+31 bits they produce (and accept) exactly the bytes of PushValue/PullValue.
+Datafile positions use these, so the format only grows for files over 2 Gb.
+ */
+
+t4_fpos c4_Column::PullValue64(const t4_byte * &ptr_) {
+  t4_fpos mask =  *ptr_ ? 0 : ~(t4_fpos)0;
+
+  t4_fpos v = 0;
+  for (;;) {
+    v = (v << 7) +  *ptr_;
+    if (*ptr_++ &0x80)
+      break;
+  }
+
+  return mask ^ (v - 0x80); // oops, last byte had bit 7 set
+}
+
+void c4_Column::PushValue64(t4_byte * &ptr_, t4_fpos v_) {
+  if (v_ < 0) {
+    v_ = ~v_;
+    *ptr_++ = 0;
+  }
+
+  const int kBits = 8 *sizeof(t4_fpos);
+
+  int n = 0;
+  do {
+    n += 7;
+  } while (n < kBits && (v_ >> n));
 
   while (n) {
     n -= 7;

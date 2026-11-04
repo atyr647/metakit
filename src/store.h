@@ -88,17 +88,17 @@ class c4_DerivedSeq: public c4_Sequence {
 class c4_StreamStrategy: public c4_Strategy {
     c4_Stream *_stream;
     t4_byte *_buffer;
-    t4_i32 _buflen;
-    t4_i32 _position;
+    t4_fpos _buflen;
+    t4_fpos _position;
   public:
     c4_StreamStrategy(t4_i32 buflen_);
     c4_StreamStrategy(c4_Stream *stream_);
     virtual ~c4_StreamStrategy();
 
     virtual bool IsValid()const;
-    virtual int DataRead(t4_i32 pos_, void *buffer_, int length_);
-    virtual void DataWrite(t4_i32 pos_, const void *buffer_, int length_);
-    virtual t4_i32 FileSize();
+    virtual int DataRead(t4_fpos pos_, void *buffer_, int length_);
+    virtual void DataWrite(t4_fpos pos_, const void *buffer_, int length_);
+    virtual t4_fpos FileSize();
 };
 
 /////////////////////////////////////////////////////////////////////////////
