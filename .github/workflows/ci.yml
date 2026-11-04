@@ -1,6 +1,6 @@
 # Builds and tests Metakit on the platforms which matter for datafiles of over
-# 2 Gb: Linux (x64, ARM64, 32-bit), macOS (Apple Silicon, Intel) and Windows
-# (MSVC: x64, x86, ARM64), and the Tcl and Python (2) bindings.
+# 2 Gb: Linux (x64, ARM64, 32-bit) and Windows (MSVC: x64, x86, ARM64), and the
+# Tcl and Python (2) bindings.  macOS is in macos.yml.
 name: ci
 
 on:
@@ -19,8 +19,7 @@ jobs:
         include:
           - { name: "linux x64", os: ubuntu-24.04, large: "5 512 --expect-all" }
           - { name: "linux arm64", os: ubuntu-24.04-arm, large: "5 512 --expect-all" }
-          - { name: "macos arm64", os: macos-latest, large: "5 512 --expect-all" }
-          - { name: "macos x64", os: macos-15-intel, large: "" }
+          # (macOS is in macos.yml, which is started by hand)
     env:
       LD_LIBRARY_PATH: .
       DYLD_LIBRARY_PATH: .
