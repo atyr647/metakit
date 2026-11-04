@@ -1977,6 +1977,12 @@ int MkTcl::FileCmd() {
         if (np2 == 0)
           return Fail("no storage with this name");
 
+        // Setting the aside file replaces the root of the datafile, so views
+        // which are attached to it are to be dropped first, as in commit and
+        // rollback.  Else they are views of a root which is gone, changes
+        // made through them end up nowhere and are lost at the next commit.
+        np->ForceRefresh(); // detach first
+
         np->_storage.SetAside(np2->_storage);
       }
       break;

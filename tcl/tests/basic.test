@@ -73,7 +73,7 @@ test basic-7 {open same file again} -constraints {unix} -setup {
   file delete $f
   equal [mk::file open db2 $f] db2
   mk::file close db2
-  return
+  set _ {}
 } -cleanup {
   mk::file close db1
   file delete -force $f

@@ -112,6 +112,18 @@
     and memcmp of empty values).  Two are left: reference binding to a null
     c4_Cursor in the notification code, which means "default rows" there.
 
+    Mk4tcl bug found and fixed: "mk::file aside" did not detach the views
+    which were attached to the datafile, as commit, rollback and load do,
+    while setting the aside file replaces the root of the datafile.  Views
+    which had been looked at before then referred to a root which was gone:
+    rows added through them ended up nowhere, and the commit (which has the
+    new root) did not have them.  This is what the tests "simple commit
+    aside" in tcl/tests/commit.test found since long ago, and was taken for
+    a problem of the tests.  As a script it only happens if the same name is
+    used again, as in a proc, where Tcl uses the same object for it.  The
+    other test which failed (basic-7) had a "return" at the end, which Tcl
+    8.6 takes for a result which is not allowed.  All Mk4tcl tests pass now.
+
     Mk4tcl bug found and fixed: a name of a property (the "v" in "v2 insert
     end k 1 v 2.5") is turned into a property of the type which the view has
     for it, and this is kept in the Tcl object for the name, for the view which
