@@ -40,6 +40,26 @@ WEBSITE URLS - The main pages on the world wide web, for news and downloads:
     License info:   http://www.equi4.com/metakit/license.html
     Contact info:   http://www.equi4.com/about/contact.html
 
+DATAFILES OVER 2 GB - WARNING - This version can read and write datafiles of
+    any size, but a datafile which has grown beyond 2 GB is written with new
+    "wide" marks, which Metakit versions before this one do not know.  Such
+    a version does not complain: it sees an EMPTY database, and if a program
+    using it adds data and commits, that data is put behind the existing
+    datafile, which is then hidden (the bytes remain, but are not found).
+    So never open a datafile over 2 GB with an older version, not even to
+    read it.  Datafiles below 2 GB are written exactly as before, and can be
+    used with all versions.  The utility "mkinfo" (in demos/, built by "make")
+    tells which kind of marks a datafile has, without needing the library:
+    "mkinfo -q file" prints standard, wide, old, empty, damaged or unknown,
+    and its exit status is 3 for wide marks.  A single column or memo is still
+    limited to 2 GB.  See CHANGES, doc/format.html, and src/marks.h.
+
+    The default commit mode keeps just one valid state: if a datafile is cut
+    short in its last commit (a copy which was interrupted, say) it shows up
+    as empty.  Extend mode (c4_Storage mode 2) keeps every commit, and the
+    last one which is complete is found again.  After a crash, the last
+    complete commit is found in either mode.
+
 ACKNOWLEDGEMENTS - Thanks to everyone who has helped shape and extend Metakit,
     including Kyrill Denisenko, Mark Roseman, Gordon McMillan, Matt Newman,
     Christian Tismer, John Bushakra, Steve Landers, Jacob Levy, John Barnard,

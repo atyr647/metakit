@@ -82,4 +82,16 @@ echo "   all $size existing bytes are still as they were,"
 echo "   the old version has put its own datafile behind them"
 echo "   current version now reads: $(run new digest wide.mk)"
 
+echo "== 4. mkinfo tells them apart, without any version of the library"
+g++ -O1 -o mkinfo "$ROOT/demos/mkinfo.cpp"
+[ "$(./mkinfo -q out-new/m1.mk)" = standard ] || fail "mkinfo standard"
+./mkinfo -q out-new/m2.mk > /dev/null || fail "mkinfo exit status for standard"
+if ./mkinfo -q wide.orig > mk.out; then fail "mkinfo exit status for wide"; fi
+[ "$(cat mk.out)" = wide ] || fail "mkinfo wide: $(cat mk.out)"
+st=0; ./mkinfo -q wide.orig > /dev/null || st=$?
+[ $st = 3 ] || fail "mkinfo exit status for wide is $st"
+head -c 3000000 out-new/m2.mk > cut.mk
+[ "$(./mkinfo -q cut.mk)" = damaged ] || fail "mkinfo on a cut file"
+echo "   standard, wide (exit 3) and damaged are told apart"
+
 echo "== all as expected"

@@ -26,6 +26,12 @@
     Mk4tcl: "mk::file end" returns a wide integer, as does "mk::file space",
     which also no longer depends on the layout of internal classes.
 
+    demos/mkinfo.cpp ("mkinfo [-q] file", built by make) reports whether a
+    datafile has standard or wide marks (or is old, empty, damaged, or not a
+    datafile), by code of its own so it works without the library.  Use it
+    before opening a datafile of unknown origin: exit status 3 means wide.
+    The README has a warning about this.
+
     tests/compat/compat.sh builds the version before all this and this one,
     and shows that datafiles below 2 Gb are byte for byte the same, that
     they read each other's datafiles, and what an old version makes of one
