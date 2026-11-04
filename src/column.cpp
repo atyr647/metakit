@@ -302,7 +302,9 @@ void c4_Column::SetupSegments() {
     d4_assert(_position >= 0);
   }
 
-  if (IsMapped()) {
+  // (the data of an aside column may be less than its size, and in a damaged
+  // aside file it can be anything, so it is only used where it is in the file)
+  if (IsMapped() && (id < 0 || _persist->IsLocationOk(_position, _size))) {
     // setup for mapped files is quick, just fill in the pointers
     d4_assert(_position > 1);
     d4_assert(_position + (n - 1) *kSegMax <= Strategy()._dataSize);
@@ -325,8 +327,14 @@ void c4_Column::SetupSegments() {
       _segments.SetAt(i, p);
 
       if (_position > 0) {
-        d4_dbgdef(int n = )Strategy().DataRead(pos, p, chunk);
-        d4_assert(n == chunk);
+        int got = Strategy().DataRead(pos, p, chunk);
+        d4_assert(got == chunk || id >= 0);
+        // what is not there (a datafile which is not as long as it says) is
+        // zero, and not whatever was in the memory
+        if (got < 0)
+          got = 0;
+        if (got < chunk)
+          memset(p + got, 0, chunk - got);
         pos += chunk;
       }
     }

@@ -549,29 +549,74 @@ t4_fpos c4_Differ::BaseOfDiff(int id_) {
 void c4_Differ::ApplyDiff(int id_, c4_Column &col_)const {
   d4_assert(0 <= id_ && id_ < _diffs.GetSize());
 
+  // The aside file is a datafile, which may be damaged: what it says to do
+  // with the column has to fit the column, else the rest of it is not done.
+  const t4_i32 want = col_.ColSize(); // this is what the size must end up as
+  bool ok = true;
+
   c4_View diff = pDiff(_diffs[id_]);
   t4_i32 offset = 0;
 
-  for (int n = 0; n < diff.GetSize(); ++n) {
+  for (int n = 0; n < diff.GetSize() && ok; ++n) {
     c4_RowRef row(diff[n]);
-    offset += pKeep(row);
+    const t4_i32 keep = pKeep(row);
+    const t4_i32 change = pResize(row);
 
     c4_Bytes data;
     pBytes(row).GetData(data);
 
+    t4_i32 size = col_.ColSize();
+    if (keep < 0 || keep > size - offset) {
+      ok = false;
+      break;
+    }
+    offset += keep;
+
     // the following code is a lot like c4_MemoRef::Modify
-    const t4_i32 change = pResize(row);
-    if (change < 0)
+    if (change < 0) {
+      if (change < -(size - offset)) {
+        ok = false;
+        break;
+      }
       col_.Shrink(offset,  - change);
-    else if (change > 0)
+    } else if (change > 0) {
+      if (change > f4_MaxColumnSize - size) {
+        ok = false;
+        break;
+      }
       col_.Grow(offset, change);
+    }
+
+    if (data.Size() > col_.ColSize() - offset) {
+      ok = false;
+      break;
+    }
 
     col_.StoreBytes(offset, data);
     offset += data.Size();
   }
 
-  if (offset > col_.ColSize())
-    col_.Shrink(offset, offset - col_.ColSize());
+  if (!ok) {
+    // keep what is right, and make sure that the column is as large as it was
+    // said to be, with zero where there is nothing: all else would be reading
+    // beyond it
+    t4_i32 size = col_.ColSize();
+    if (size > want)
+      col_.Shrink(want, size - want);
+    else if (size < want) {
+      col_.Grow(size, want - size);
+      t4_byte zeros[256];
+      memset(zeros, 0, sizeof zeros);
+      for (t4_i32 at = size; at < want; at += sizeof zeros) {
+        int len = want - at < (t4_i32)sizeof zeros ? (int)(want - at): (int)
+          sizeof zeros;
+        col_.StoreBytes(at, c4_Bytes(zeros, len));
+      }
+    }
+
+    if (col_.Persist() != 0)
+      col_.Persist()->SetDamaged();
+  }
 }
 
 void c4_Differ::GetRoot(c4_Bytes &buffer_) {
@@ -1349,13 +1394,18 @@ void c4_Persist::LoadAll() {
       if (c4_WalkGuard::Bad()) {
         _damaged = true;
 
-        _root->DetachFromParent();
-        _root->DetachFromStorage(true);
+        c4_HandlerSeq *old = _root;
+        old->DetachFromParent();
+        old->DetachFromStorage(true);
         _root = 0;
 
         c4_HandlerSeq *seq = d4_new c4_HandlerSeq(this);
         seq->DefineRoot();
         SetRoot(seq);
+
+        // gone now, unless a view still has it (as a storage does at first)
+        old->IncRef();
+        old->DecRef();
       }
     }
   }

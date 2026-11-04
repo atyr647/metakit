@@ -92,6 +92,54 @@ static void MakeValid(const char *fn_, int kind_) {
   f4_WideAbove = 0x7fffffff - 64;
 }
 
+// a datafile and an aside file with changes to it (see c4_Storage::SetAside)
+static void MakeAside(const char *main_, const char *aside_) {
+  remove(main_);
+  remove(aside_);
+  f4_WideAbove = 0x7fffffff - 64;
+
+  {
+    c4_Storage s(main_, 1);
+    c4_View a = s.GetAs("a[i:I,s:S,b:B,v[x:I]]");
+    for (int i = 0; i < 80; ++i) {
+      char tmp[40];
+      sprintf(tmp, "main %d", i);
+      int n = a.Add(c4_IntProp("i")[i] + c4_StringProp("s")[tmp]);
+      c4_View sub = c4_ViewProp("v")(a[n]);
+      for (int k = 0; k < i % 3; ++k)
+        sub.Add(c4_IntProp("x")[k]);
+      if (i % 11 == 0) {
+        t4_byte b[3000];
+        for (int k = 0; k < 3000; ++k)
+          b[k] = (t4_byte)(k + i);
+        c4_BytesProp("b")(a[n]).SetData(c4_Bytes(b, 3000));
+      }
+    }
+    s.Commit();
+  }
+
+  c4_Storage s1(main_, 0);
+  c4_Storage s2(aside_, 1);
+  s1.SetAside(s2);
+  c4_View a = s1.View("a");
+  for (int i = 0; i < 40; ++i) {
+    char tmp[60];
+    sprintf(tmp, "aside %d with some more text", i);
+    int n = a.Add(c4_IntProp("i")[1000 + i] + c4_StringProp("s")[tmp]);
+    c4_View sub = c4_ViewProp("v")(a[n]);
+    sub.Add(c4_IntProp("x")[i]);
+  }
+  for (int i = 0; i < 80; i += 7)
+    c4_StringProp("s")(a[i]) = "changed";
+  a.RemoveAt(10, 12);
+  t4_byte big[7000];
+  for (int k = 0; k < 7000; ++k)
+    big[k] = (t4_byte)(k * 5);
+  c4_BytesProp("b")(a[3]).SetData(c4_Bytes(big, 7000));
+  s1.Commit();
+  s2.Commit();
+}
+
 static bool ReadFile(const char *fn_, std::string &data_) {
   FILE *f = fopen(fn_, "rb");
   if (f == 0)
@@ -190,6 +238,10 @@ static long Walk(c4_View v_, int depth_) {
       if (prop.Type() == 'V') {
         c4_View sub = ((const c4_ViewProp&)prop)(v_[i]);
         sum += Walk(sub, depth_ + 1);
+      } else if (prop.Type() == 'S') {
+        // as a C string, which must end where it is
+        const char *str = ((const c4_StringProp&)prop)(v_[i]);
+        sum += (long)strlen(str);
       } else {
         c4_Bytes b;
         if (v_.GetItem(i, p, b))
@@ -232,10 +284,80 @@ int main(int argc, char **argv) {
   }
   remove("tcorrupt_src.mk");
 
+  // a string which does not end in a zero is not read beyond its end
+  {
+    remove("tcorrupt_str.mk");
+    {
+      c4_Storage s("tcorrupt_str.mk", 1);
+      c4_View t = s.GetAs("t[s:S]");
+      t.Add(c4_StringProp("s")["zzzzqqqq"]);
+      s.Commit();
+    }
+    std::string d;
+    ReadFile("tcorrupt_str.mk", d);
+    size_t at = d.find("zzzzqqqq");
+    if (at == std::string::npos) {
+      printf("string test: the string is not in the datafile\n");
+      return 1;
+    }
+    d[at + 8] = 'X';
+    WriteFile("tcorrupt_str.mk", d);
+
+    c4_Storage s("tcorrupt_str.mk", 0);
+    c4_View tv = s.View("t");
+    const char *str = c4_StringProp("s")(tv[0]);
+    if (strlen(str) > 8) {
+      printf("string test: a string without an end is read beyond it\n");
+      return 1;
+    }
+    remove("tcorrupt_str.mk");
+  }
+
+  std::string asideMain, asideFile;
+  MakeAside("tcorrupt_am.mk", "tcorrupt_aside.mk");
+  ReadFile("tcorrupt_am.mk", asideMain);
+  ReadFile("tcorrupt_aside.mk", asideFile);
+
+  // and it must work as it is (this is how the datafile is not damaged)
+  {
+    c4_Storage s1("tcorrupt_am.mk", 0);
+    c4_Storage s2("tcorrupt_aside.mk", 0);
+    s1.SetAside(s2);
+    if (s1.View("a").GetSize() != 80 + 40 - 12 || s1.IsDamaged() ||
+      s2.IsDamaged()) {
+      printf("the aside file does not work as it should\n");
+      return 1;
+    }
+  }
+
   long total = 0;
-  int opened = 0, invalid = 0, flagged = 0;
+  int opened = 0, invalid = 0, flagged = 0, asides = 0;
   for (unsigned long seed = first; seed < first + count; ++seed) {
     Seed(seed);
+
+    if (seed % 4 == 3) {
+      // an aside file which is damaged (or the datafile it is for)
+      const bool main = Below(4) == 0;
+      std::string d = main ? asideMain: asideFile;
+      if (sVerbose)
+        printf("seed %lu, aside scenario, %s damaged\n", seed, main ?
+          "datafile": "aside file");
+      Damage(d);
+      WriteFile(main ? "tcorrupt_am.mk": "tcorrupt_aside.mk", d);
+      WriteFile(main ? "tcorrupt_aside.mk": "tcorrupt_am.mk", main ? asideFile:
+        asideMain);
+
+      c4_Storage s1("tcorrupt_am.mk", 0);
+      c4_Storage s2("tcorrupt_aside.mk", 0);
+      if (s1.Strategy().IsValid() && s2.Strategy().IsValid()) {
+        s1.SetAside(s2);
+        total += Walk(s1.View("a"), 0);
+        total += Walk(s1, 0);
+        ++asides;
+      }
+      continue;
+    }
+
     const int kind = Below(kKinds);
     std::string d = valid[kind];
     if (sVerbose)
@@ -286,8 +408,11 @@ int main(int argc, char **argv) {
     }
   }
   remove("tcorrupt_dmg.mk");
+  remove("tcorrupt_am.mk");
+  remove("tcorrupt_aside.mk");
 
   printf("%lu damaged datafiles: %d opened (%d found damaged), %d invalid, "
-    "no crash (%ld)\n", count, opened, flagged, invalid, total & 0xFF);
+    "%d with an aside file, no crash (%ld)\n", count, opened, flagged, invalid,
+    asides, total & 0xFF);
   return 0;
 }

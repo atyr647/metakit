@@ -42,7 +42,15 @@
     then replaces what was damaged, so a program which wants to keep the
     datafile as it is should not commit.  Datafiles which are not damaged
     are read exactly as before.  This was tested by damaging valid datafiles
-    in random ways (tests/tcorrupt.cpp, with AddressSanitizer: 25000 files).
+    in random ways (tests/tcorrupt.cpp, with AddressSanitizer: 30000 files,
+    a quarter of them aside files, see c4_Storage::SetAside, or the datafile
+    they are for).  What an aside file says to change in a column is checked
+    against the column, a string which does not end in a zero reads as an
+    empty string, and what is missing from a datafile which is not as long as
+    it says reads as zero.  This is about the structure: the contents of a
+    damaged column are whatever they are.  And a datafile which is memory
+    mapped must not be made shorter by another program while it is open: that
+    is up to the operating system, and nothing a library can make safe.
     Also: c4_ViewRef (as in storage.View("name")) is empty for a property
     which is not a view, instead of reading something else as a pointer, and
     c4_StreamStrategy::FileSize now is the size of the buffer, and not where

@@ -877,7 +877,13 @@ const void *c4_FormatS::Get(int index_, int &length_) {
     ptr = "";
   }
 
-  d4_assert(((const char*)ptr)[length_ - 1] == 0);
+  // a string ends in a zero, if not it is not a string (a damaged datafile)
+  // and what is read as one must not go beyond its end
+  if (((const char*)ptr)[length_ - 1] != 0) {
+    length_ = 1;
+    ptr = "";
+  }
+
   return ptr;
 }
 
