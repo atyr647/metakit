@@ -160,7 +160,7 @@ int c4_FormatL::DoCompare(const c4_Bytes &b1_, const c4_Bytes &b2_) {
 void c4_FormatL::Define(int rows_, const t4_byte **ptr_) {
   if (ptr_ == 0 && rows_ > 0) {
     d4_assert(_data.ColSize() == 0);
-    _data.InsertData(0, rows_ *sizeof(t4_i64), true);
+    _data.InsertData(0, (t4_fpos)rows_ *sizeof(t4_i64), true);
   }
 
   c4_FormatX::Define(rows_, ptr_);
@@ -222,7 +222,7 @@ int c4_FormatD::DoCompare(const c4_Bytes &b1_, const c4_Bytes &b2_) {
 void c4_FormatD::Define(int rows_, const t4_byte **ptr_) {
   if (ptr_ == 0 && rows_ > 0) {
     d4_assert(_data.ColSize() == 0);
-    _data.InsertData(0, rows_ *sizeof(double), true);
+    _data.InsertData(0, (t4_fpos)rows_ *sizeof(double), true);
   }
 
   c4_FormatX::Define(rows_, ptr_);

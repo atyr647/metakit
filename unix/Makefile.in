@@ -122,7 +122,7 @@ install-python: Mk4py$(LIBEXT)
 
 clean:
 	rm -f *$(LIBEXT) *.o
-	rm -f $(DEMOS) struct regress twide tlarge tlarge.mk myfile.dat secret.dat twide_*.mk
+	rm -f $(DEMOS) struct regress twide tlarge tlarge.mk tlarge_ints.mk myfile.dat secret.dat twide_*.mk
 	rm -rf tests/[a-z]*
 
 distclean: clean

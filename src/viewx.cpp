@@ -530,6 +530,13 @@ bool c4_BytesRef::Modify(const c4_Bytes &buf_, t4_i32 off_, int diff_)const {
   if (colNum >= 0) {
     c4_Handler &h = _cursor._seq->NthHandler(colNum);
     const int n = buf_.Size();
+
+    // an item cannot become larger than a column can, refuse instead
+    const t4_fpos wideLimit = (t4_fpos)off_ + n;
+    if (wideLimit > f4_MaxColumnSize || (t4_fpos)h.ItemSize(_cursor._index) +
+      diff_ > f4_MaxColumnSize)
+      return false;
+
     const t4_i32 limit = off_ + n; // past changed bytes
     const t4_i32 overshoot = limit - h.ItemSize(_cursor._index);
 

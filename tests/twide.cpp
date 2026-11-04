@@ -15,10 +15,19 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined (unix) || defined (__unix__) || defined (__APPLE__)
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
+#define HAVE_FORK 1
+#endif 
+
 // the hook which sets the size above which wide marks are used
 extern t4_fpos f4_WideAbove;
 // and the one which sets the size of datafile which commits cannot exceed
 extern t4_fpos f4_MaxFileEnd;
+// and the one with the size which a single column cannot exceed
+extern t4_i32 f4_MaxColumnSize;
 
 static const t4_fpos kStdLimit = 0x7fffffff - 64; // the default
 static const t4_fpos kMaxEndDefault = f4_MaxFileEnd; // what the library has
@@ -304,6 +313,127 @@ static void TestFailedCommitNoRollback(int mode_, bool wide_) {
   f4_WideAbove = kStdLimit;
   remove(fnFail);
   remove(fnCtrl);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 0b. A single column (or memo) cannot be larger than 2 Gb: this is enforced
+
+#if HAVE_FORK
+// run a function in a process of its own, and see if it ended by abort()
+static bool Aborts(void (*func_)()) {
+  fflush(stdout);
+  fflush(stderr);
+  pid_t pid = fork();
+  if (pid == 0) {
+    if (freopen("/dev/null", "w", stderr) == 0) // the message is expected
+      _exit(2);
+    func_();
+    _exit(0); // did not abort
+  }
+
+  int status = 0;
+  waitpid(pid, &status, 0);
+  return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
+}
+
+static void ManyStrings() {
+  f4_MaxColumnSize = 100000;
+  c4_Storage s;
+  c4_View v = s.GetAs("a[s:S]");
+  c4_StringProp ps("s");
+  char text[1001];
+  memset(text, 'x', 1000);
+  text[1000] = 0;
+  for (int i = 0; i < 200; ++i)
+    v.Add(ps[text]);
+}
+
+static void HugeLongs() {
+  // 2^28 longs would be a column of 2^31 bytes, which is one too many
+  c4_Storage s;
+  c4_View v = s.GetAs("a[l:L]");
+  c4_LongProp pl("l");
+  v.SetSize(268435456);
+  pl(v[0]) = (t4_i64)1 << 40;
+}
+
+static void OneByteTooMany() {
+  f4_MaxColumnSize = 100000;
+  c4_Storage s;
+  c4_View v = s.GetAs("a[b:B]");
+  c4_BytesProp pb("b");
+  static t4_byte buf[100001];
+  v.SetSize(1);
+  pb(v[0]).SetData(c4_Bytes(buf, sizeof buf));
+}
+#endif 
+
+static void TestColumnLimit() {
+  printf("limit on the size of a column\n");
+
+  // exactly at the limit is fine, this is committed and read back
+  const char *fn = "twide_col.mk";
+  remove(fn);
+  f4_MaxColumnSize = 100000;
+  {
+    c4_Storage s(fn, 1);
+    c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+    c4_BytesProp pb("b");
+    static t4_byte buf[100000];
+    for (int k = 0; k < 100000; ++k)
+      buf[k] = (t4_byte)(k * 7);
+    v.SetSize(1);
+    pb(v[0]).SetData(c4_Bytes(buf, sizeof buf));
+    CHECK(s.Commit());
+  }
+  {
+    c4_Storage s(fn, 0);
+    c4_View v = s.View("a");
+    c4_BytesProp pb("b");
+    CHECK(v.GetSize() == 1);
+    c4_Bytes data;
+    pb(v[0]).GetData(data);
+    CHECK(data.Size() == 100000);
+    bool same = data.Size() == 100000;
+    for (int k = 0; same && k < 100000; ++k)
+      same = data.Contents()[k] == (t4_byte)(k * 7);
+    CHECK(same);
+  }
+  remove(fn);
+
+  // changing part of an item (memo) refuses to grow it beyond the limit,
+  // which can be reported, and leaves the item as it was
+  {
+    f4_MaxColumnSize = 50000;
+    c4_Storage s;
+    c4_View v = s.GetAs("a[b:B]");
+    c4_BytesProp pb("b");
+    static t4_byte buf[40000];
+    memset(buf, 'a', sizeof buf);
+    v.SetSize(1);
+    pb(v[0]).SetData(c4_Bytes(buf, sizeof buf));
+
+    t4_byte more[100];
+    memset(more, 'z', sizeof more);
+    CHECK(!pb(v[0]).Modify(c4_Bytes(more, 100), 49950));
+    CHECK(pb(v[0]).GetSize() == 40000);
+    CHECK(!pb(v[0]).Modify(c4_Bytes(more, 100), 40000, 20000));
+    CHECK(pb(v[0]).GetSize() == 40000);
+    CHECK(pb(v[0]).Modify(c4_Bytes(more, 100), 49900)); // ends at the limit
+    CHECK(pb(v[0]).GetSize() == 50000);
+    CHECK(pb(v[0]).Modify(c4_Bytes(more, 100), 100)); // in the middle
+    CHECK(pb(v[0]).GetSize() == 50000);
+  }
+  f4_MaxColumnSize = 0x7fffffff;
+
+#if HAVE_FORK
+  // beyond the limit it is not possible to carry on, so it ends right there
+  CHECK(Aborts(ManyStrings));
+  CHECK(Aborts(HugeLongs));
+  CHECK(Aborts(OneByteTooMany));
+#else 
+  printf("  (no fork on this platform, skipping the checks which abort)\n");
+#endif 
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -762,6 +892,7 @@ static void TestCrash(bool wide_, int *outcomes_) {
 /////////////////////////////////////////////////////////////////////////////
 
 int main() {
+  TestColumnLimit();
   TestFailedCommit(1, false);
   TestFailedCommit(2, false);
   TestFailedCommit(1, true);

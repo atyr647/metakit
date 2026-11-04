@@ -21,6 +21,18 @@ class c4_Strategy; // not defined here
 
 /////////////////////////////////////////////////////////////////////////////
 
+// The size of one column is a 32-bit value in the datafile, so it cannot
+// exceed this, however large the datafile itself may be.  This applies to
+// a single column, i.e. all the integers (or all the strings, or all the
+// data bytes) of one property, as well as to every memo.  The engine checks
+// it whenever a column grows: it is a variable only so tests can lower it.
+extern t4_i32 f4_MaxColumnSize;
+
+// There is no way to report an error where a column would become too large,
+// since this happens in the middle of changes in memory, which would end up
+// inconsistent.  So this reports the problem and ends the program.
+extern void f4_ColumnTooLarge(t4_fpos wanted_);
+
 class c4_Column {
     c4_PtrArray _segments;
     t4_fpos _position;
@@ -82,7 +94,7 @@ class c4_Column {
     static t4_fpos PullValue64(const t4_byte * &ptr_);
     static void PushValue64(t4_byte * &ptr_, t4_fpos v_);
 
-    void InsertData(t4_i32 index_, t4_i32 count_, bool clear_);
+    void InsertData(t4_i32 index_, t4_fpos count_, bool clear_);
     void RemoveData(t4_i32 index_, t4_i32 count_);
     void RemoveGap();
 

@@ -211,7 +211,8 @@ hold 64-bit offsets, and a header which is flagged as such.&nbsp; Datafiles
 below 2 Gb are not affected, they are exactly as before.&nbsp; Older versions
 of Metakit do not recognize wide tails, they see such a datafile as empty, so
 these should not be used with it.&nbsp; Single columns and memos remain limited
-to 2 Gb.&nbsp; The layout of all these marks is described in src/marks.h.</dd>
+to 2 Gb less one byte (their sizes are stored in 32 bits), which the library
+enforces.&nbsp; The layout of all these marks is described in src/marks.h.</dd>
 
 <p><dt><b>Structural information</b>
 <dd>

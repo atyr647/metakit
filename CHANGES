@@ -7,7 +7,11 @@
     "wide" marks at the end (see src/marks.h and doc/format.html).  Older
     versions of Metakit do not recognize these, and see such a datafile as
     being empty, so do not open one with them, not even to read it.
-    Single columns and memos are still limited to 2 Gb each.
+    Single columns and memos are still limited to 2 Gb each (a 32-bit
+    size, one less than 2^31 bytes), and this is enforced now: operations
+    on memos which would exceed it return false, and any other growth of a
+    column prints a message and ends the program, since there is no way to
+    carry on with changes which are half done.  See also doc/format.html.
 
     C++ API: file positions and sizes are of the new type t4_fpos (a 64-bit
     integer where the compiler has one) in c4_Strategy and c4_FileStrategy:
@@ -28,7 +32,9 @@
     The last complete commit is now found again, and more commits can
     follow on such a file.  Rollback after a failed commit also works now.
 
-    Bugs fixed: a commit which failed because the datafile would exceed
+    Bugs fixed: columns of integers of more than 256 Mb (e.g. 33 million
+    64-bit values) made the program crash, because their size in bits was
+    calculated in 32 bits.  They work up to the limit now.  A commit which failed because the datafile would exceed
     2 Gb left the free space bookkeeping damaged, so the next commit could
     report success but lose all data. A commit which failed in any other
     way during allocation now leaves the state of the storage alone.  A

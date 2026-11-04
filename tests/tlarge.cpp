@@ -17,6 +17,9 @@
 //   4. Interrupt commits of a large row at several points, check that the
 //      last complete commit is intact each time, and that more commits can
 //      follow on such a file.
+//   5. Commit a column of integers which is far beyond 256 Mb (it used to
+//      overflow an int calculation there), which is as large as one column
+//      is allowed to get.  Persisted values are read back and checked.
 //
 // Whatever the engine can or cannot do, the following must always hold:
 //   - a commit either succeeds or fails, a failed commit must never damage
@@ -311,6 +314,33 @@ int main(int argc, char **argv) {
 
   printf("final check of everything\n");
   VerifyFile(fn, sRows, sCount, true);
+
+  printf("5. a column of 1.2 GB of integers\n");
+  {
+    const int n = 150000000;
+    const char *fn2 = "tlarge_ints.mk";
+    remove(fn2);
+    c4_LongProp pl("l");
+    {
+      c4_Storage s(fn2, 1);
+      c4_View v = s.GetAs("a[l:L]");
+      v.SetSize(n);
+      for (int i = 0; i < n; ++i)
+        pl(v[i]) = ((i64)i << 20) + 7;
+      CHECK(s.Commit());
+    }
+    c4_Storage s(fn2, 0);
+    c4_View v = s.View("a");
+    CHECK(v.GetSize() == n);
+    int bad = 0;
+    for (int i = 0; i < v.GetSize() && i < n; i += (i < 100000 ? 1: 991))
+      if ((i64)pl(v[i]) != ((i64)i << 20) + 7)
+        ++bad;
+    CHECK(v.GetSize() == n && bad == 0 && (i64)pl(v[n - 1]) == ((i64)(n - 1) <<
+      20) + 7);
+    printf("  %d rows, %d mismatches\n", v.GetSize(), bad);
+    remove(fn2);
+  }
 
   free(buf);
   printf(sFailures == 0 ? "PASSED\n" : "FAILED (%d checks)\n", sFailures);

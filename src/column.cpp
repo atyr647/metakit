@@ -36,6 +36,20 @@ void f4_memmove(void *to_, const void *from_, int n_) {
 #endif 
 
 /////////////////////////////////////////////////////////////////////////////
+// column size limit
+
+#include <stdio.h>
+#include <stdlib.h>
+
+t4_i32 f4_MaxColumnSize = 0x7fffffff;
+
+void f4_ColumnTooLarge(t4_fpos wanted_) {
+  fprintf(stderr, "Metakit: a column of %.0f bytes exceeds the limit of %ld "
+    "bytes for a single column\n", (double)wanted_, (long)f4_MaxColumnSize);
+  abort();
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // c4_Column
 
 c4_Column::c4_Column(c4_Persist *persist_): _position(0), _size(0), _persist
@@ -157,6 +171,7 @@ void c4_Column::PullLocation(const t4_byte * &ptr_) {
   d4_assert(_segments.GetSize() == 0);
 
   _size = PullValue(ptr_);
+  d4_assert(_size >= 0); // the engine never stores more than 31 bits of size
   _position = 0;
   if (_size > 0) {
     _position = PullValue64(ptr_);
@@ -514,6 +529,10 @@ void c4_Column::Grow(t4_i32 off_, t4_i32 diff_) {
   d4_assert(off_ <= _size);
   d4_assert(diff_ > 0);
 
+  // all growth comes through here, this is where the size limit is enforced
+  if (diff_ > f4_MaxColumnSize - _size)
+    f4_ColumnTooLarge((t4_fpos)_size + diff_);
+
   if (_segments.GetSize() == 0)
     SetupSegments();
 
@@ -831,15 +850,19 @@ void c4_Column::PushValue64(t4_byte * &ptr_, t4_fpos v_) {
   }
 }
 
-void c4_Column::InsertData(t4_i32 index_, t4_i32 count_, bool clear_) {
+void c4_Column::InsertData(t4_i32 index_, t4_fpos count_, bool clear_) {
   d4_assert(index_ <= ColSize());
 
   if (count_ > 0) {
-    Grow(index_, count_);
+    // the count may be a product which does not fit in 32 bits
+    if (count_ > f4_MaxColumnSize - ColSize())
+      f4_ColumnTooLarge((t4_fpos)ColSize() + count_);
+
+    Grow(index_, (t4_i32)count_);
 
     // clear the contents, in separate chunks if necessary
     if (clear_) {
-      c4_ColIter iter(*this, index_, index_ + count_);
+      c4_ColIter iter(*this, index_, index_ + (t4_i32)count_);
       while (iter.Next())
         memset(iter.BufSave(), 0, iter.BufLen());
     }
@@ -1141,7 +1164,8 @@ int c4_ColOfInts::RowCount()const {
 int c4_ColOfInts::CalcAccessWidth(int numRows_, t4_i32 colSize_) {
   d4_assert(numRows_ > 0);
 
-  int w = (int)((colSize_ << 3) / numRows_);
+  // the size in bits does not fit 32 bits for columns of 256 Mb and more
+  int w = (int)(((t4_fpos)colSize_ << 3) / numRows_);
 
   // deduce sub-byte sizes for small vectors, see c4_ColOfInts::Set
   if (numRows_ <= 7 && 0 < colSize_ && colSize_ <= 6) {
@@ -1289,7 +1313,7 @@ void c4_ColOfInts::Set(int index_, const c4_Bytes &buf_) {
     int k = RowCount();
 
     t4_i32 oldEnd = ColSize();
-    t4_i32 newEnd = ((t4_i32)k *n + 7) >> 3;
+    t4_fpos newEnd = ((t4_fpos)k *n + 7) >> 3;
 
     if (newEnd > oldEnd) {
       InsertData(oldEnd, newEnd - oldEnd, _currWidth == 0);
@@ -1390,11 +1414,11 @@ void c4_ColOfInts::ResizeData(int index_, int count_, bool clear_) {
 
   if (!(_currWidth &7)) {
     // not 1, 2, or 4
-    const t4_i32 w = (t4_i32)(_currWidth >> 3);
+    const t4_fpos w = _currWidth >> 3;
     if (count_ > 0)
-      InsertData(index_ *w, count_ *w, clear_);
+      InsertData((t4_i32)(index_ *w), (t4_fpos)count_ *w, clear_);
     else
-      RemoveData(index_ *w,  - count_ * w);
+      RemoveData((t4_i32)(index_ *w), (t4_i32)( - count_ * w));
     return ;
   }
 
@@ -1452,7 +1476,7 @@ void c4_ColOfInts::ResizeData(int index_, int count_, bool clear_) {
 
 void c4_ColOfInts::FixSize(bool fudge_) {
   int n = RowCount();
-  t4_i32 needBytes = ((t4_i32)n *_currWidth + 7) >> 3;
+  t4_fpos needBytes = ((t4_fpos)n *_currWidth + 7) >> 3;
 
   // use a special trick to mark sizes less than 1 byte in storage
   if (fudge_ && 1 <= n && n <= 4 && (_currWidth &7)) {
@@ -1480,7 +1504,7 @@ void c4_ColOfInts::FixSize(bool fudge_) {
   t4_i32 currSize = ColSize();
 
   if (needBytes < currSize)
-    RemoveData(needBytes, currSize - needBytes);
+    RemoveData((t4_i32)needBytes, (t4_i32)(currSize - needBytes));
   else if (needBytes > currSize)
     InsertData(currSize, needBytes - currSize, true);
 }
