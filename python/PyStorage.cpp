@@ -537,10 +537,26 @@ static PyMethodDef Mk4Methods[] =  {
   }
 };
 
+// A column which would grow beyond what a column can be (see c4_SizeError) is
+// reported as a Python exception.  The engine has changed nothing then, but
+// the storage can not be committed until it has been rolled back.
+static PyObject *sSizeError = 0;
+
+static void SizeErrorHandler(const c4_SizeError &e) {
+  char msg[300];
+  sprintf(msg, "a column would be %.0f bytes, more than the %ld which a column "
+    "can have; nothing was changed, but the storage can only be rolled back "
+    "now, it can not be committed", (double)e._wanted, (long)e._limit);
+  Fail(sSizeError, msg); // throws, as a handler must
+}
+
 extern "C"__declspec(dllexport)
 void initMk4py() {
   PyObject *m = Py_InitModule4("Mk4py", Mk4Methods, mk4py_module_documentation,
     0, PYTHON_API_VERSION);
+  sSizeError = PyErr_NewException("Mk4py.SizeError", PyExc_StandardError, 0);
+  PyObject_SetAttrString(m, "SizeError", sSizeError);
+  c4_SetSizeErrorHandler(SizeErrorHandler);
   PyObject_SetAttrString(m, "version", PyString_FromString("2.4.9.7"));
   PyObject_SetAttrString(m, "ViewType", (PyObject*) &PyViewtype);
   PyObject_SetAttrString(m, "ViewerType", (PyObject*) &PyViewertype);

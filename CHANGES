@@ -29,6 +29,16 @@
     over 5000 size errors, which were checked against a model, and also under
     AddressSanitizer with leak detection (tests/tfuzz.cpp, tests/twide.cpp).
 
+    The Python binding raises Mk4py.SizeError (a StandardError) for this,
+    with the same guarantees: nothing is changed, and commit() raises IOError
+    until rollback() has been called.  Before, the exception was lost and
+    Python showed "SystemError: error return without exception set".  Adding
+    rows now also undoes what was done when anything at all is thrown while
+    they are added, and not only for a c4_SizeError, so a handler which
+    throws something of its own is safe.  Test: python/test/test_sizeerror.py
+    (it lowers the limit, f4_MaxColumnSize, to be able to reach it, and needs
+    Python 2 with ctypes, as the binding itself does).
+
     Damaged datafiles: what a datafile says about itself (which views and
     properties there are, how many rows, how large and where the columns are)
     is now checked as it is read, where it was believed before.  A datafile

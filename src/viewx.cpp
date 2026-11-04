@@ -224,7 +224,8 @@ void c4_Sequence::InsertAt(int index_, c4_Cursor newElem_, int count_) {
   }
 
 #if q4_EXCEPTIONS
-  } catch (const c4_SizeError &) {
+  } catch (...) {
+    // (whatever was thrown: a size error handler can throw what it likes)
     for (int k = 0; k < inserted.GetSize(); ++k)
       ((c4_Handler*)inserted.GetAt(k))->Remove(index_, count_);
     SetNumRows(NumRows() - count_);
