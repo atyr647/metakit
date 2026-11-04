@@ -112,18 +112,21 @@
     and memcmp of empty values).  Two are left: reference binding to a null
     c4_Cursor in the notification code, which means "default rows" there.
 
-    Known problem, not caused by this and not fixed: in the Mk4tcl tests
-    (tcl/tests/object.test, "blocked view" and "ordered view"), a view made
-    of a range of a blocked view returns wrong values for doubles after rows
-    were deleted, if the members of c4_Persist (src/persist.h) are laid out
-    in a certain way.  Merely adding a bool before _fCommit, to the version
-    before any of the work in here, makes it show, and it does not with the
-    members as they are, which is why the flag for size errors is where it is.
-    Neither AddressSanitizer nor valgrind find anything.  Something which
-    depends on the layout of the memory is wrong in how a blocked view or its
-    range hands out the values, and anything which changes that may make it
-    show again.  To see it, put "bool _padding;" after _rootWalk in c4_Persist
-    (and "_padding(false)" in its constructor) and run the Mk4tcl tests.
+    Mk4tcl bug found and fixed: a name of a property (the "v" in "v2 insert
+    end k 1 v 2.5") is turned into a property of the type which the view has
+    for it, and this is kept in the Tcl object for the name, for the view which
+    it was made for.  That view was recognized by the address of its sequence,
+    but once a view is gone another one can get that address, and Tcl shares
+    the objects for the same name in a script.  So a name could keep the type
+    of a view which was not there any more: a string where a double is stored,
+    of which the 4 bytes of "0.0" and 4 more beyond it were read as the value.
+    What goes wrong depends on what is in that memory, and so on how the
+    memory was laid out, which is why a change in the size of an unrelated
+    class made blocked and ordered views fail in tcl/tests/object.test, and
+    why no memory checker saw anything.  The type is checked against the view
+    each time now.  tcl/tests/layout-check.sh builds Mk4tcl with the members of
+    c4_Persist in other places and requires the same results: it fails
+    without this fix.
 
     Tests: "make test" also runs tests/twide.cpp, which covers the wide
     marks (using a hook to make small datafiles use them), positions up to

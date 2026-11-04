@@ -80,10 +80,6 @@ class c4_Persist {
     bool(c4_Persist:: *_fCommit)(bool);
     int _mode;
     bool _owned;
-    // Here since it takes no room: the size of this object is the same as it
-    // was.  Adding to it showed a problem in the Mk4tcl tests (blocked and
-    // ordered views give wrong values for doubles), which depends on how the
-    // memory is laid out, and not on anything which was added.  See CHANGES.
     bool _tainted; // an operation was abandoned (c4_SizeError), see Taint
 
     // used for on-the-fly conversion of old-format datafiles

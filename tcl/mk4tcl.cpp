@@ -1031,8 +1031,30 @@ static Tcl_ObjType mkPropertyType =  {
 
 const c4_Property &AsProperty(Tcl_Obj *objPtr, const c4_View &view_) {
   void *tag = (&view_[0])._seq; // horrific hack to get at c4_Sequence pointer
-  if (objPtr->typePtr !=  &mkPropertyType || objPtr
-    ->internalRep.twoPtrValue.ptr1 != tag) {
+
+  // The property is kept in the Tcl object, for the view which it was made
+  // for.  An address is not enough to know it is that view, though: when a
+  // view is gone, another one can be given the same address, with other types
+  // for the same names.  Tcl shares the objects for the names in a script, so
+  // an old property would be used, say as a string where a double is stored,
+  // and then some bytes beyond what the string holds are taken for the
+  // value.  The same happens if the structure of the same view is changed.
+  // If the type was not given in the name, it is what the view says it is.
+  bool usable = objPtr->typePtr == &mkPropertyType && objPtr->internalRep.
+    twoPtrValue.ptr1 == tag;
+  if (usable) {
+    const c4_Property &cached = *(c4_Property*)objPtr->internalRep.twoPtrValue.
+      ptr2;
+    int length;
+    const char *string = Tcl_GetStringFromObj(objPtr, &length);
+    if (!(length > 2 && string[length - 2] == ':')) {
+      int n = view_.FindPropIndexByName(string);
+      const char type = n >= 0 ? view_.NthProperty(n).Type(): 'S';
+      usable = type == cached.Type();
+    }
+  }
+
+  if (!usable) {
     CONST86 Tcl_ObjType *oldTypePtr = objPtr->typePtr;
 
     char type = 'S';

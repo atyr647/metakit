@@ -1,0 +1,68 @@
+#!/usr/bin/env tclsh
+# %renumber<^\s*test >%
+
+source [file join [file dir [info script]] initests.tcl]
+
+test 0 {} {
+  package require Mk4tcl
+} $version
+
+# A property which is given as a plain name has the type which the view says
+# it has.  The Tcl object for the name remembers the property once it has
+# been looked up, and Tcl shares the objects for the same name in a script.
+# That must not make a name keep a type which the view does not have (any
+# more): once it was taken to be a string where a double was stored, and the
+# bytes after the string were read as the value.
+
+set f f1.dat
+set g f2.dat
+test 1 {a name does not keep the type of a view which is gone} -body {
+  file delete $f $g
+
+  # The views are made and dropped in the same way each time, so the next
+  # one tends to get the memory of the one before, as the old one did not
+  # have the same type for the name.
+  set p v
+  for {set i 0} {$i < 50} {incr i} {
+    mk::file open db1 $f
+    mk::view layout db1.a {v:S}
+    mk::view size db1.a 1
+    mk::set db1.a!0 $p text
+    equal [mk::get db1.a!0 $p] text
+    mk::file close db1
+
+    mk::file open db2 $g
+    mk::view layout db2.a {v:D}
+    mk::view size db2.a 1
+    mk::set db2.a!0 $p 2.5
+    equal [mk::get db2.a!0 $p] 2.5
+    mk::file close db2
+  }
+} -cleanup {catch {mk::file close db1}; catch {mk::file close db2}; file delete $f $g}
+
+test 2 {one name in views of different types} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.s {v:S}
+  mk::view layout db.d {v:D}
+  mk::view layout db.i {v:I}
+  foreach view {s d i} {
+    mk::view size db.$view 1
+  }
+
+  set p v
+  # round and round, the same object is used for all of them
+  for {set round 0} {$round < 3} {incr round} {
+    mk::set db.s!0 $p text$round
+    mk::set db.d!0 $p $round.5
+    mk::set db.i!0 $p [expr {$round * 7}]
+
+    equal [mk::get db.s!0 $p] text$round
+    equal [mk::get db.d!0 $p] $round.5
+    equal [mk::get db.i!0 $p] [expr {$round * 7}]
+  }
+} -cleanup {mk::file close db; file delete $f}
+
+file delete $f
+cleanupTests
