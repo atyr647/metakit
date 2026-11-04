@@ -1,3 +1,50 @@
+2026-11-04    Datafiles larger than 2 Gb
+
+    Metakit can now commit, reopen and memory-map datafiles of any size,
+    where the limit used to be 2 Gb.  Datafiles which are smaller than
+    that are not affected in any way: the bytes written are identical to
+    those written before.  Only when a datafile outgrows 2 Gb, it gets new
+    "wide" marks at the end (see src/marks.h and doc/format.html).  Older
+    versions of Metakit do not recognize these, and see such a datafile as
+    being empty, so do not open one with them, not even to read it.
+    Single columns and memos are still limited to 2 Gb each.
+
+    C++ API: file positions and sizes are of the new type t4_fpos (a 64-bit
+    integer where the compiler has one) in c4_Strategy and c4_FileStrategy:
+    DataRead, DataWrite, DataCommit, FileSize, SetBase, EndOfData, and the
+    _dataSize, _baseOffset and _rootPos members.  Classes derived from them
+    must be changed to match, since the old signatures no longer override
+    anything - this was done for the Tcl and Python bindings and for the
+    demos.  c4_Storage::FreeSpace has an extra variant for 64-bit totals,
+    the old one reports at most 2 Gb.  Use -D_FILE_OFFSET_BITS=64 (done by
+    the library itself) for the stdio calls in your own strategy classes.
+
+    Mk4tcl: "mk::file end" returns a wide integer, as does "mk::file space",
+    which also no longer depends on the layout of internal classes.
+
+    Interrupted commits: a commit which was interrupted (the program
+    crashed, or the power went) could leave a datafile which was then
+    opened as if it were empty, even though all data was still in it.
+    The last complete commit is now found again, and more commits can
+    follow on such a file.  Rollback after a failed commit also works now.
+
+    Bugs fixed: a commit which failed because the datafile would exceed
+    2 Gb left the free space bookkeeping damaged, so the next commit could
+    report success but lose all data. A commit which failed in any other
+    way during allocation now leaves the state of the storage alone.  A
+    root of 16 Mb or more (which cannot be stored) makes a commit fail
+    instead of corrupting the datafile.  64-bit ARM platforms (and any other
+    LP64 compiler) are recognized, and Mk4tcl compiles again on 64-bit
+    platforms (configure it with CC=g++ so that it is linked as C++).
+
+    Tests: "make test" also runs tests/twide.cpp, which covers the wide
+    marks (using a hook to make small datafiles use them), positions up to
+    petabytes, streams, and crashes after every single write.  "make
+    test-large" runs tests/tlarge.cpp, which builds a datafile of over
+    4 Gb, and checks mapping, allocation, commit and recovery on it.  This
+    needs several GB of free disk and memory.  Windows builds have not been
+    tried, nor builds without 64-bit integers, which keep the 2 Gb limit.
+
 2011-08-18    Move code to public repository on GitHub
 
     The Subversion repository at svn://svn.equi4.com/metakit is now

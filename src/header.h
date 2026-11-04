@@ -139,10 +139,14 @@ extern void f4_memmove(void *d, const void *s, int n);
 
 typedef unsigned char t4_byte; // create typedefs for t4_byte, etc.
 
+// Not all configurations know the size of a long (the Tcl one does not), then
+// mk4.h makes this choice when it is included below, based on the platform.
+#if defined (SIZEOF_LONG)
 #if SIZEOF_LONG == 8
 typedef int t4_i32; // longs are 64b, so int must be 32b
 #else 
 typedef long t4_i32; // longs aren't 64b, so they are 32b
+#endif 
 #endif 
 
 /////////////////////////////////////////////////////////////////////////////

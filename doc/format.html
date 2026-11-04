@@ -195,6 +195,24 @@ The 8-byte header contains: a 2-byte magic number, which is also used to
 detect endian-ness, 2 bytes reserved for future use, and a 4-byte file
 offset pointing to the structural information.</dd>
 
+<p><dt><b>Tails</b>
+<dd>
+Each commit ends with two 8-byte "tail" marks, a <i>skip tail</i> and a
+<i>commit tail</i>.&nbsp; The commit tail holds the size and the 4-byte offset
+of the structural information described next.&nbsp; A datafile is opened by
+scanning back from its end for these tails, the offset in the header is only
+a hint.&nbsp; It is used to find the last complete commit again, if a commit
+was interrupted and the file does not end with valid tails.</dd>
+
+<p><dt><b>Files over 2 Gb</b>
+<dd>
+Datafiles which grow beyond 2 Gb use "wide" tails of 24 bytes in total, which
+hold 64-bit offsets, and a header which is flagged as such.&nbsp; Datafiles
+below 2 Gb are not affected, they are exactly as before.&nbsp; Older versions
+of Metakit do not recognize wide tails, they see such a datafile as empty, so
+these should not be used with it.&nbsp; Single columns and memos remain limited
+to 2 Gb.&nbsp; The layout of all these marks is described in src/marks.h.</dd>
+
 <p><dt><b>Structural information</b>
 <dd>
 The offset in the header points to a block of data consisting of:</dd>
@@ -248,9 +266,7 @@ item sizes - both are adaptive ints).</li>
 Each column contains items of a single type, and can be considered as highly
 optimized linear arrays of data.</dd>
 </dl>
-<i>Note: the 4-byte file offset in the header will be turned into a more
-general "extended header" in the next file format version to drop the current
-32-bit file size restriction.&nbsp; A number of changes are planned for the
+<i>Note: a number of changes are planned for the
 way structural information is stored, to make it possible to open
 datafiles more lazily and perform efficient partial commits.</i>
 <br>&nbsp;

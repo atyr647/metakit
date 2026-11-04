@@ -1254,6 +1254,11 @@ void c4_Persist::FetchOldLocation(c4_Column &col_) {
     col_.SetLocation(FetchOldValue(), sz);
 }
 
+// the free space as pairs of positions (see c4_Allocator), if tracked at all
+const c4_FposArray *c4_Persist::SpaceMap()const {
+  return _space;
+}
+
 t4_i32 c4_Persist::FreeBytes(t4_fpos *bytes_) {
   return _space == 0 ?  - 1: _space->FreeCounts(bytes_);
 }

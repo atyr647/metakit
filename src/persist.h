@@ -118,6 +118,7 @@ class c4_Persist {
     void FetchOldLocation(c4_Column &col_);
 
     t4_i32 FreeBytes(t4_fpos *bytes_ = 0);
+    const c4_FposArray *SpaceMap()const;
 
     static c4_HandlerSeq *Load(c4_Stream*);
     static void Save(c4_Stream *, c4_HandlerSeq &root_);

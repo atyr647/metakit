@@ -1,0 +1,80 @@
+#!/usr/bin/env tclsh
+# %renumber<^\s*test >%
+
+source [file join [file dir [info script]] initests.tcl]
+
+test 0 {} {
+  package require Mk4tcl
+} $version
+
+# Datafiles can be larger than 2 Gb.  That takes too much to test here, but
+# for a small one the same commands can be checked: they must report sizes
+# and positions as integers which are not limited to 32 bits.
+
+set f f1.dat
+test 1 {mk::file end returns the size of the datafile} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {s:S b:B}
+  for {set i 0} {$i < 50} {incr i} {
+    mk::row append db.a s "row $i" b [string repeat x [expr {$i * 100}]]
+  }
+  mk::file commit db
+  mk::file close db
+
+  equal [file size $f] [mk::file end $f]
+} -cleanup {file delete $f}
+
+test 2 {mk::file end rejects other files} -body {
+  set fd [open $f w]
+  puts $fd "this is not a datafile"
+  close $fd
+
+  list [catch {mk::file end $f} msg] $msg
+} -cleanup {file delete $f} -result {1 {not a Metakit datafile}}
+
+test 3 {mk::file space lists increasing positions} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {s:S b:B}
+  for {set i 0} {$i < 50} {incr i} {
+    mk::row append db.a s "row $i" b [string repeat x [expr {$i * 100}]]
+  }
+  mk::file commit db
+
+  set space [mk::file space db]
+  assert [expr {[llength $space] >= 2}]
+  set last -1
+  foreach pos $space {
+    assert [string is integer -strict $pos]
+    assert [expr {$pos > $last}]
+    set last $pos
+  }
+  # the used space ends where the datafile does
+  equal [file size $f] $last
+} -cleanup {mk::file close db; file delete $f}
+
+test 4 {data survives when a datafile is reopened} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {b:B}
+  for {set i 0} {$i < 4} {incr i} {
+    mk::row append db.a b [string repeat [format %c [expr {65 + $i}]] 70000]
+    mk::file commit db
+  }
+  mk::file close db
+
+  mk::file open db $f -readonly
+  set r {}
+  for {set i 0} {$i < 4} {incr i} {
+    set s [mk::get db.a!$i b]
+    lappend r [string length $s] [string index $s 0] [string index $s end]
+  }
+  set r
+} -cleanup {mk::file close db; file delete $f} -result {70000 A A 70000 B B 70000 C C 70000 D D}
+
+file delete $f
+cleanupTests

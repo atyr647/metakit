@@ -4,6 +4,7 @@
 
 #include "mk4tcl.h"
 #include "mk4io.h"
+#include "../src/persist.h"
 
 #ifndef _WIN32_WCE
 #include <errno.h>
@@ -1832,11 +1833,12 @@ int MkTcl::FileCmd() {
 #endif 
         if (!err || !strat.IsValid())
           return Fail("no such file");
-        t4_i32 end = strat.EndOfData();
+        t4_fpos end = strat.EndOfData();
         if (end < 0)
           return Fail("not a Metakit datafile");
 
-        Tcl_SetIntObj(tcl_GetObjResult(), end);
+        // datafiles can be larger than 2 Gb, which does not fit an int
+        Tcl_SetWideIntObj(tcl_GetObjResult(), end);
         return _error;
       }
       break;
@@ -1955,16 +1957,16 @@ int MkTcl::FileCmd() {
         c4_Cursor c = &v[0];
         c4_Sequence *s = c._seq;
 
-        // even more horrible (i.e. brittle) hack to get the space vector
+        // get the space vector, which holds positions in the datafile
         c4_Persist *p = s->Persist();
-        c4_PtrArray *a = p != 0 ? *(c4_PtrArray **)p: 0; // first field
+        const c4_FposArray *a = p != 0 ? p->SpaceMap(): 0;
         if (a == 0)
           return Fail("storage is not persistent");
 
-        // now return the values as a list
+        // now return the values as a list, they may exceed 2 Gb
         Tcl_Obj *r = tcl_GetObjResult();
         for (int i = 1; i < a->GetSize() - 1 && !_error; ++i)
-          tcl_ListObjAppendElement(r, Tcl_NewLongObj((long)a->GetAt(i)));
+          tcl_ListObjAppendElement(r, Tcl_NewWideIntObj(a->GetAt(i)));
         return _error;
       }
   }

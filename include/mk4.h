@@ -102,6 +102,7 @@ class c4_Persist; // not defined here
 #if !defined (_WIN32) && !defined (q4_LONG64)
 #if defined (_PA_RISC2_0) || defined (__powerpc64__) || defined(__sparcv9) || \
 defined(__x86_64__) || defined(__s390x__) || defined(__alpha) ||  \
+  defined(__aarch64__) || defined(__LP64__) || defined(_LP64) ||  \
   (defined(__ia64) && (!defined(__HP_aCC) || defined(__LP64__)))
 #define q4_LONG64 1
 #endif 
