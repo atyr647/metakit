@@ -86,7 +86,7 @@ test: Makefile libmk4$(LIBEXT) regress twide
 
 # Needs several GB of disk and RAM and takes a while, so not part of "test".
 # Example: make test-large LARGE_ARGS="6 512 --expect-all"
-LARGE_ARGS = 6 512
+LARGE_ARGS = 8 512 --expect-all
 
 test-large: Makefile libmk4$(LIBEXT) tlarge
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tlarge tlarge.mk $(LARGE_ARGS)
