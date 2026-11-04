@@ -683,6 +683,19 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   const t4_fpos end = _fullScan ? 0 : size - _strategy._baseOffset;
   int oldTails = kStdTailSize; // the size of the tails now at the end
 
+  // Where the last complete commit ended, if that is not at the end of the
+  // file, which is so after an interrupted commit.  The commit which is made
+  // now goes behind what remains of that one.  The way back to it from the
+  // header (see RecoverEnd) has to be repaired to lead there, or else it is
+  // lost again if this commit gets interrupted too.  If there is no complete
+  // commit at all, it is the header itself which has to be repaired.
+  const t4_fpos lastEnd = _strategy._lastEnd >= 0 ? _strategy._lastEnd -
+    _strategy._baseOffset:  - 1;
+  const bool noCommit = !_fullScan && end > 0 && _strategy._hasHeader &&
+    lastEnd < 0;
+  const bool repairChain = !_fullScan && _mode == 2 && end > 0 && lastEnd >= 8
+    && lastEnd + 8 <= end;
+
   if (_differ == 0) {
     if (_mode != 1)
       _space->Initialize();
@@ -703,9 +716,16 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
       // by RecoverEnd and ends with the remains of that commit.  The tails
       // which count are then somewhere inside, and nothing at the end may
       // be taken for them.
+      //
+      // Loading found out which it is, and what looks like tails is not to
+      // be trusted if it did not: a datafile which is cut at the wrong place
+      // ends with bytes which can look like anything.  Strategies which have
+      // not loaded anything (that is, not by EndOfData) are left to guess.
       t4_byte last[8];
       oldTails = 0;
-      if (_strategy.DataRead(end - 8, last, sizeof last) == sizeof last) {
+      const bool known = _strategy._lastEnd >= 0 || _strategy._hasHeader;
+      if ((!known || lastEnd == end) && _strategy.DataRead(end - 8, last,
+        sizeof last) == sizeof last) {
         if (last[0] == kMarkWideCommit)
           oldTails = kWideTailSize;
         else if (last[0] == kMarkTail && (last[1] | last[2] | last[3]) != 0)
@@ -716,6 +736,20 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
         d4_assert(end >= oldTails);
         _space->Occupy(end - oldTails, oldTails);
         _nextSpace->Occupy(end - oldTails, oldTails);
+      } else if (lastEnd >= 24 && lastEnd + 8 <= end) {
+        // The tails of the last complete commit are not at the end, there
+        // are remains of one which was interrupted behind them.  Nothing may
+        // be put over them, or if this commit gets interrupted as well, that
+        // last complete commit would not be found any more.
+        int lastTails = kStdTailSize;
+        if (_strategy.DataRead(lastEnd - 8, last, sizeof last) == sizeof last &&
+          last[0] == kMarkWideCommit)
+          lastTails = kWideTailSize;
+
+        _space->Occupy(lastEnd - lastTails, lastTails);
+        _nextSpace->Occupy(lastEnd - lastTails, lastTails);
+        _space->Occupy(lastEnd, 8);
+        _nextSpace->Occupy(lastEnd, 8);
       }
       _space->Occupy(end, 8);
       _nextSpace->Occupy(end, 8);
@@ -788,6 +822,27 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 
   d4_assert(_mode != 0 || _fullScan);
 
+  // In the default mode, the header leads to the last commit, which is how it
+  // is found if the datafile gets interrupted in a later commit (RecoverEnd).
+  // Yet if a commit was interrupted between its last tail and its header, the
+  // header leads to the commit before it.  That one is going to be overwritten
+  // by this commit, so before anything is written, make the header right.
+  if (_mode == 1 && !_fullScan && end > 0 && lastEnd >= 24 && lastEnd <= end) {
+    t4_byte hm[8], lm[8];
+    if (_strategy.DataRead(0, hm, sizeof hm) == sizeof hm &&
+      _strategy.DataRead(lastEnd - 8, lm, sizeof lm) == sizeof lm) {
+      const bool lastWide = lm[0] == kMarkWideCommit;
+      t4_fpos at = f4_Get32(hm + 4);
+      if (hm[3] &kHeadWide)
+        at = f4_Join32(hm[3] &0x3F, at);
+
+      if (at != lastEnd) {
+        c4_FileMark head(lastEnd, _strategy._bytesFlipped, false, lastWide);
+        _strategy.DataWrite(0, &head, sizeof head);
+      }
+    }
+  }
+
   // this is the place where writing may start
 
   // Files which grow too large for 31-bit positions get wide marks, and so
@@ -813,6 +868,17 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     _nextSpace->Release(end0, 8);
     end0 -= kStdTailSize; // overwrite existing tail markers
   } else {
+    c4_FileMark head(limit + tails - end, _strategy._bytesFlipped, end > 0,
+      wide);
+
+    // The header of a new datafile goes first.  Otherwise, if this commit gets
+    // interrupted right after the end marker below, what is in the file does
+    // not start like a datafile, and the next time it is taken for something
+    // else, to which a datafile gets added, which cannot be found any more if
+    // that gets interrupted.  The bytes which end up in the file are the same.
+    if (end == 0)
+      _strategy.DataWrite(end, &head, sizeof head);
+
     /* 18-11-2005 write new end marker and flush it before *anything* else! */
     if (!_fullScan && end0 < limit) {
       WriteSkipTail(_strategy, limit, wide);
@@ -821,9 +887,8 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
         return ;
     }
 
-    c4_FileMark head(limit + tails - end, _strategy._bytesFlipped, end > 0,
-      wide);
-    _strategy.DataWrite(end, &head, sizeof head);
+    if (end > 0)
+      _strategy.DataWrite(end, &head, sizeof head);
 
     if (end0 < limit)
       end0 = limit;
@@ -902,6 +967,23 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   if (walk.Position() == 0 || _strategy._failure != 0)
     return ;
 
+  // What is left of an interrupted commit ends with a mark which says that
+  // another commit goes up to there, which now is this one (see RecoverEnd).
+  // And the header of a datafile which has no commit does not lead anywhere.
+  // These come before the commit tail, since if they were done after it, an
+  // interruption in between would leave a datafile which looks fine, but in
+  // which the way back to this commit is still broken.  If this commit does
+  // not get completed they are of no consequence: what they lead to is not
+  // a commit then, and the way back stops where it did.
+  if (repairChain) {
+    c4_FileMark fix(end2 - lastEnd, _strategy._bytesFlipped, true, wide);
+    _strategy.DataWrite(lastEnd, &fix, sizeof fix);
+  }
+  if (noCommit) {
+    c4_FileMark head(end2, _strategy._bytesFlipped, false, wide);
+    _strategy.DataWrite(0, &head, sizeof head);
+  }
+
   _strategy.DataCommit(0);
 
   if (wide) {
@@ -915,7 +997,8 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   }
   d4_assert(_strategy.FileSize() - _strategy._baseOffset == end2);
 
-  // do not alter the file header in extend mode, unless it is new
+  // do not alter the file header in extend mode, unless it is new (a header
+  // of a datafile which has no commit was already done, above)
   if (!_fullScan && (_mode == 1 || end == 0)) {
     _strategy.DataCommit(0);
 
@@ -951,6 +1034,10 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   _strategy.DataCommit(end2);
 
   d4_assert(_strategy.FileSize() - _strategy._baseOffset == end2);
+
+  // this is where the datafile ends now, with a commit which is complete
+  _strategy._lastEnd = end2 + _strategy._baseOffset;
+  _strategy._hasHeader = false;
 
   if (spacePtr_ != 0 && _space != _nextSpace) {
     d4_assert(*spacePtr_ == _space);
@@ -1151,7 +1238,11 @@ bool c4_Persist::LoadIt(c4_Column &walk_) {
     return false;
 
   if (_strategy.EndOfData(limit) < 0) {
-    _strategy.SetBase(limit);
+    // A file which starts with a header has had its first commit interrupted,
+    // so it is the datafile which is going to be written, from the start.  If
+    // there is something else then the datafile goes behind it.
+    if (!_strategy._hasHeader)
+      _strategy.SetBase(limit);
     d4_assert(_strategy._failure == 0); // file is ok, but empty
     return false;
   }

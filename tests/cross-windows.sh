@@ -6,7 +6,7 @@
 #
 # It needs g++-mingw-w64-x86-64 (or -i686) and wine (for 32: wine32 as well).
 # The programs are linked statically, so there is no library to find.  This
-# runs regress and twide, and tlarge with a datafile of over 4 Gb (so it
+# runs regress, twide, tfuzz, and tlarge with a datafile of over 4 Gb (so it
 # needs the disk space and some time), see tlarge.cpp for what it does.
 #
 # This does not try the Microsoft compiler: the project files in win/ are
@@ -44,6 +44,7 @@ $CXX $FLAGS -o regress.exe $T/regress.cpp $T/tbasic1.cpp $T/tbasic2.cpp \
   $T/tlimits.cpp $T/tmapped.cpp $T/tnotify.cpp $T/tresize.cpp $T/tstore1.cpp \
   $T/tstore2.cpp $T/tstore3.cpp $T/tstore4.cpp $T/tstore5.cpp $OBJS
 $CXX $FLAGS -o twide.exe $T/twide.cpp $OBJS
+$CXX $FLAGS -o tfuzz.exe $T/tfuzz.cpp $OBJS
 $CXX $FLAGS -o tlarge.exe $T/tlarge.cpp $OBJS
 
 cp "$ROOT/unix/reversed" run/
@@ -53,6 +54,8 @@ wine ../regress.exe > /dev/null
 diff -r --strip-trailing-cr "$ROOT/tests/ok" tests && echo "regress output is as expected"
 echo "== twide"
 wine ../twide.exe | tail -1
+echo "== tfuzz"
+wine ../tfuzz.exe | tail -1
 echo "== tlarge"
 wine ../tlarge.exe tlarge.mk $TLARGE_ARGS | tail -1
 rm -f tlarge.mk tlarge_ints.mk

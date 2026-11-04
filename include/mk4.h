@@ -831,6 +831,11 @@ class c4_Strategy {
     t4_fpos _rootPos;
     /// The size of the root column
     t4_i32 _rootLen;
+    /// Where the last complete commit ended when the datafile was loaded,
+    /// which is before the end of the file if a commit was interrupted
+    t4_fpos _lastEnd;
+    /// True if a datafile was loaded which has a header, but no commit
+    bool _hasHeader;
 
   private:
     t4_fpos ScanMarks(t4_fpos end_, bool adjust_);

@@ -45,6 +45,27 @@
     opened as if it were empty, even though all data was still in it.
     The last complete commit is now found again, and more commits can
     follow on such a file.  Rollback after a failed commit also works now.
+    More than one interruption in the same datafile (which has the remains of
+    the first when the second one happens) used to lose data too, found with
+    tests/tfuzz.cpp, which makes random changes, commits, crashes and cuts
+    against a model: the last complete commit was then not found, or in the
+    default mode not the last, because (1) the way back to it from the header
+    was broken by the remains, (2) a first commit which was interrupted before
+    the header was written made the datafile look like something else, to
+    which a datafile is added and then cannot be found, (3) data could be
+    allocated over the tails of the last complete commit, (4) tails which
+    only looked like tails were taken for them when a datafile was cut, so
+    a commit overwrote the end of the file without a skip tail, and was
+    reported as done though it could not be read afterwards, and (5) the header
+    stayed on an older commit after an interruption between the last tail and
+    the header.  c4_Strategy keeps where the last complete commit ended
+    (_lastEnd) for this.  With the same random choices, 60000 scenarios were
+    run without a problem, so were 1000 with the sanitizers.
+    A datafile in the default mode which is cut exactly where an older commit
+    ended is not a datafile any more (its data was partly overwritten), and
+    the engine, which trusts what it loads, may crash on it.  It was never
+    hardened against damaged files, and still is not.
+
     The same goes for a datafile which has been cut short: in extend mode
     (c4_Storage mode 2) the last commit which is entirely there is found
     again, however it was cut.  A datafile in the default mode keeps just
@@ -63,6 +84,10 @@
     instead of corrupting the datafile.  64-bit ARM platforms (and any other
     LP64 compiler) are recognized, and Mk4tcl compiles again on 64-bit
     platforms (configure it with CC=g++ so that it is linked as C++).
+
+    Tests: tests/tfuzz.cpp is run by "make test" (47 scenarios, among them
+    the ones which found the problems above) and by "make test-fuzz" with a
+    thousand.  "tfuzz -v <seed>" shows what happens in one scenario.
 
     Sanitizers: tests/sanitize.sh runs the tests with AddressSanitizer and
     UndefinedBehaviorSanitizer.  No memory errors or leaks were found.  Two

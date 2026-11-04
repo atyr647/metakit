@@ -612,7 +612,8 @@ c4_Stream::~c4_Stream(){}
 /////////////////////////////////////////////////////////////////////////////
 
 c4_Strategy::c4_Strategy(): _bytesFlipped(false), _failure(0), _mapStart(0),
-  _dataSize(0), _baseOffset(0), _rootPos( - 1), _rootLen( - 1){}
+  _dataSize(0), _baseOffset(0), _rootPos( - 1), _rootLen( - 1), _lastEnd( - 1),
+  _hasHeader(false){}
 
 c4_Strategy::~c4_Strategy() {
   d4_assert(_mapStart == 0);
@@ -677,12 +678,19 @@ t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
   if (!adjust)
     end_ = FileSize();
 
+  if (adjust)
+    _hasHeader = false;
+
   t4_fpos result = ScanMarks(end_, adjust);
 
   // Not finding valid tails at the end does not mean there is no data: a
   // commit which got interrupted leaves a file which does not end with them.
   if (result < 0)
     result = RecoverEnd(end_, adjust);
+
+  // writers want to know where the data really ends, see SaveIt
+  if (adjust)
+    _lastEnd = result >= 0 ? result :  - 1;
 
   return result;
 }
@@ -710,6 +718,12 @@ t4_fpos c4_Strategy::RecoverEnd(t4_fpos end_, bool adjust_) {
   if ((mark[0] != 'J' && mark[0] != 'L') || (mark[0] ^ mark[1]) != ('J' ^
     'L') || mark[2] != 0x1A || (mark[3] &0x80) != 0)
     return  - 1;
+
+  // A header, so this is the start of a datafile whose first commit did not
+  // get completed, unless a commit turns up.  It is not the same as a file
+  // which has something else in it, to which a datafile gets added.
+  if (adjust_)
+    _hasHeader = true;
 
   // the offset in the header (see marks.h), if it was clipped it is no use
   t4_fpos next = f4_Get32(mark + 4);
@@ -750,7 +764,12 @@ t4_fpos c4_Strategy::RecoverEnd(t4_fpos end_, bool adjust_) {
     next += step;
   }
 
-  return best < 0 ?  - 1: ScanMarks(best + _baseOffset, adjust_);
+  if (best < 0)
+    return  - 1;
+
+  if (adjust_)
+    _hasHeader = false;
+  return ScanMarks(best + _baseOffset, adjust_);
 }
 
 /// Scan backwards from the given end of the datafile
