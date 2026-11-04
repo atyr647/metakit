@@ -141,8 +141,9 @@ void c4_Bytes::_MakeCopy() {
 
 /// Return true if the contents of both objects are equal
 bool operator == (const c4_Bytes &a_, const c4_Bytes &b_) {
-  return a_._contents == b_._contents || (a_._size == b_._size && memcmp
-    (a_._contents, b_._contents, a_._size) == 0);
+  // empty ones may have no contents at all, which memcmp does not accept
+  return a_._contents == b_._contents || (a_._size == b_._size && (a_._size ==
+    0 || memcmp(a_._contents, b_._contents, a_._size) == 0));
 }
 
 /////////////////////////////////////////////////////////////////////////////

@@ -195,24 +195,25 @@ t4_i32 c4_HashViewer::CalcHash(c4_Cursor cursor_)const {
           }
       }
 
-      long x =  *p << 7;
+      // unsigned, so overflow wraps around (as it did) without being undefined
+      unsigned long x = (unsigned long)(*p << 7);
 
       // modifications are risky, this code avoid scanning huge blobs
       if (len > 200)
         len = 100;
 
       while (--len >= 0)
-        x = (1000003 *x) ^  *p++;
+        x = (1000003UL *x) ^  *p++;
 
       if (buffer.Size() > 200) {
         len = 100;
         p += buffer.Size() - 200;
         while (--len >= 0)
-          x = (1000003 *x) ^  *p++;
+          x = (1000003UL *x) ^  *p++;
       }
 
       x ^= buffer.Size();
-      hash ^= x ^ i;
+      hash ^= (long)x ^ i;
     }
   }
 

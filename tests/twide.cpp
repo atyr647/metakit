@@ -86,7 +86,7 @@ static long Signature(const char *fn_, int *rows_ = 0) {
   if (rows_ != 0)
     *rows_ = v.GetSize();
 
-  long h = v.GetSize();
+  unsigned long h = v.GetSize();
   for (int i = 0; i < v.GetSize(); ++i) {
     h = h * 31 + pi(v[i]);
     for (const char *q = ps(v[i]); *q; ++q)
@@ -105,7 +105,7 @@ static long LiveSignature(c4_View v_) {
   c4_StringProp ps("s");
   c4_BytesProp pb("b");
 
-  long h = v_.GetSize();
+  unsigned long h = v_.GetSize();
   for (int i = 0; i < v_.GetSize(); ++i) {
     h = h * 31 + pi(v_[i]);
     for (const char *q = ps(v_[i]); *q; ++q)

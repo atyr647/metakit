@@ -58,6 +58,13 @@
     LP64 compiler) are recognized, and Mk4tcl compiles again on 64-bit
     platforms (configure it with CC=g++ so that it is linked as C++).
 
+    Sanitizers: tests/sanitize.sh runs the tests with AddressSanitizer and
+    UndefinedBehaviorSanitizer.  No memory errors or leaks were found.  Two
+    cases of undefined behaviour in the engine were fixed (an overflow of
+    the hash for hashed views, which now wraps without changing any value,
+    and memcmp of empty values).  Two are left: reference binding to a null
+    c4_Cursor in the notification code, which means "default rows" there.
+
     Tests: "make test" also runs tests/twide.cpp, which covers the wide
     marks (using a hook to make small datafiles use them), positions up to
     petabytes, streams, and crashes after every single write.  "make
