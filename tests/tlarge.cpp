@@ -170,6 +170,9 @@ static void AddRow(c4_View &v_, const c4_BytesProp &p_, t4_byte *buf_, int id_,
 }
 
 int main(int argc, char **argv) {
+  // (what was done must be seen even if the program is ended abruptly)
+  setvbuf(stdout, 0, _IONBF, 0);
+
   const char *fn = argc > 1 ? argv[1] : "tlarge.mk";
   int rows = argc > 2 ? atoi(argv[2]) : 6;
   i64 len = (argc > 3 ? atoi(argv[3]) : 512) * (i64)(1 << 20);
