@@ -33,7 +33,8 @@ sys.path.insert(0, os.getcwd())
 
 # Don't run the standard Python tests, just run Metakit tests
 test.regrtest.STDTESTS = []
-test.regrtest.NOTTESTS = []
+# (a set in newer versions of Python, a list in older ones)
+test.regrtest.NOTTESTS = type(test.regrtest.NOTTESTS)()
 
 # Run all tests
 test.regrtest.main(testdir=testdir)

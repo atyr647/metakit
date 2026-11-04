@@ -21,7 +21,7 @@ except ImportError:
     print 'test_sizeerror: skipped, needs ctypes'
 
 if ctypes is not None:
-    lib = ctypes.CDLL(Mk4py.__file__)
+    lib = ctypes.CDLL(os.path.abspath(Mk4py.__file__))
     limit = ctypes.c_int.in_dll(lib, 'f4_MaxColumnSize')
     NORMAL = limit.value
     FILE = 'test_sizeerror.mk'

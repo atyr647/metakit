@@ -10,6 +10,11 @@ import string
 # for overflow testing
 MAXINT = sys.maxint
 MININT = -MAXINT - 1
+
+# What an integer property (type 'I') holds is 32 bits, whatever sys.maxint
+# is: it is 64 bits where a Python int is a C long, as on most platforms now.
+INTPROP_MAX = 2**31 - 1
+INTPROP_MIN = -2**31
 MAXLONGLONG = 2**63 - 1
 MINLONGLONG = -2**63
 MAXULONGLONG = 2**64 - 1

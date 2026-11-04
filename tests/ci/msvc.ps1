@@ -13,7 +13,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
-$work = Join-Path $root "ci-work-$Arch"
+$work = Join-Path ([System.IO.Path]::GetTempPath()) "mk4-ci-work-$Arch"
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory $work | Out-Null
 Set-Location $work

@@ -140,7 +140,8 @@ class test_regrtest(Command):
 	# jcw end
 
         test.regrtest.STDTESTS = []
-        test.regrtest.NOTTESTS = []
+        # (a set in newer versions of Python, a list in older ones)
+        test.regrtest.NOTTESTS = type(test.regrtest.NOTTESTS)()
 
         if self.test_options:
             sys.argv[1:] = string.split(self.test_options, ' ')

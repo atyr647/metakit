@@ -115,6 +115,16 @@ PyRowRef::PyRowRef(const c4_RowRef &o, int immutable): PyHead(PyRowReftype),
   c._seq->IncRef();
 }
 
+// An integer property holds 32 bits, but a Python int is a C long, which has
+// 64 bits on most platforms: what does not fit must be refused, and not be
+// cut down to its low 32 bits (2**63-1 was stored as -1).
+static long checkInt32(long number) {
+  if (sizeof(long) > 4 && (number < -2147483647L - 1 || number > 2147483647L))
+    Fail(PyExc_OverflowError,
+      "int too large to convert to a 32-bit int property (use type 'L')");
+  return number;
+}
+
 // with thanks to Niki Spahiev for improving conversions and error checks
 void PyRowRef::setFromPython(const c4_RowRef &row, const c4_Property &prop,
   PyObject *attr) {
@@ -124,11 +134,11 @@ void PyRowRef::setFromPython(const c4_RowRef &row, const c4_Property &prop,
         long number = PyInt_AsLong(attr);
         if (number ==  - 1 && PyErr_Occurred() != NULL)
           Fail(PyExc_ValueError, "int too large to convert to C long");
-        ((const c4_IntProp &)prop)(row) = number;
+        ((const c4_IntProp &)prop)(row) = checkInt32(number);
       }
        else if (attr != Py_None) {
         PWONumber number(attr);
-        ((const c4_IntProp &)prop)(row) = (long)number;
+        ((const c4_IntProp &)prop)(row) = checkInt32((long)number);
       }
       break;
 #ifdef HAVE_LONG_LONG

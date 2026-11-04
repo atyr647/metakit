@@ -39,6 +39,15 @@
     (it lowers the limit, f4_MaxColumnSize, to be able to reach it, and needs
     Python 2 with ctypes, as the binding itself does).
 
+    Python binding, integers: a Python int is a C long, which has 64 bits on
+    most platforms now, but an integer property (type I) has 32.  Storing a
+    value which does not fit cut it down to its lower 32 bits without a word
+    (2**63-1 was stored as -1).  It is now an OverflowError, as the tests of
+    the binding always expected.  Those tests had assumed sys.maxint was the
+    largest value of such a property, and the way they are run (all.py, and
+    "setup.py test") did not work with Python 2.7: both are fixed, and all
+    of them run and pass (python/test/ci.sh builds the binding and runs them).
+
     Damaged datafiles: what a datafile says about itself (which views and
     properties there are, how many rows, how large and where the columns are)
     is now checked as it is read, where it was believed before.  A datafile
