@@ -1,0 +1,17 @@
+# Temporary: which macOS runner labels does this repository get at all?
+name: macos-probe
+on:
+  push:
+    paths: [".github/workflows/macos-probe.yml"]
+  workflow_dispatch:
+jobs:
+  probe:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15, macos-15-intel, macos-26]
+    steps:
+      - run: uname -a && sw_vers && clang++ --version
