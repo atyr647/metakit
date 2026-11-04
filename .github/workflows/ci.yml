@@ -51,8 +51,11 @@ jobs:
       matrix:
         include:
           - name: "linux 32-bit"
-            cxxflags: "-O2 -m32"
-            ldflags: "-m32"
+            # (-m32 goes into the compiler command, so it is also there when
+            # the shared library is linked)
+            cxx: "g++ -m32"
+            cxxflags: "-O2"
+            ldflags: ""
             packages: "g++-multilib"
             large: "5 512 --expect-all --ints=50"
           - name: "linux without mmap"
@@ -136,8 +139,21 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # (Python 2 is not available from setup-python any more: built from source)
+      - name: cache Python 2.7
+        id: py27cache
+        uses: actions/cache@v4
         with:
-          python-version: "2.7"
-      - name: build and test
-        run: python/test/ci.sh
+          path: ~/py27
+          key: python-2.7.18-${{ runner.os }}-${{ runner.arch }}-v1
+      - name: build Python 2.7
+        if: steps.py27cache.outputs.cache-hit != 'true'
+        run: |
+          curl -sSfL -o /tmp/py27.tgz https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz
+          tar -C /tmp -xzf /tmp/py27.tgz
+          cd /tmp/Python-2.7.18
+          ./configure --prefix=$HOME/py27 > /dev/null
+          make -j4 > /dev/null
+          make install > /dev/null
+      - name: build the binding and test
+        run: python/test/ci.sh $HOME/py27/bin/python

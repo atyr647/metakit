@@ -30,8 +30,11 @@ $flags = @("/nologo", "/O2", "/EHsc", "/MD", "/W0", "/D_CRT_SECURE_NO_WARNINGS",
 
 $lib = "column", "custom", "derived", "fileio", "field", "format", "handler",
   "persist", "remap", "std", "store", "string", "table", "univ", "view", "viewx"
-Run "compile library" cl @flags /c @($lib | ForEach-Object { "$root\src\$_.cpp" })
-Run "make library" lib /nologo /OUT:mk4.lib @($lib | ForEach-Object { "$_.obj" })
+# (lists are splatted from variables, else they are passed as one argument)
+$libSrc = @($lib | ForEach-Object { "$root\src\$_.cpp" })
+$libObj = @($lib | ForEach-Object { "$_.obj" })
+Run "compile library" cl @flags /c @libSrc
+Run "make library" lib /nologo /OUT:mk4.lib @libObj
 
 # the programs which are one file
 foreach ($t in "twide", "tfuzz", "tcorrupt", "tlarge") {
@@ -42,7 +45,8 @@ foreach ($t in "twide", "tfuzz", "tcorrupt", "tlarge") {
 $reg = "regress", "tbasic1", "tbasic2", "tcusto1", "tcusto2", "tdiffer",
   "textend", "tformat", "tlimits", "tmapped", "tnotify", "tresize", "tstore1",
   "tstore2", "tstore3", "tstore4", "tstore5"
-Run "build regress" cl @flags @($reg | ForEach-Object { "$root\tests\$_.cpp" }) /Fe:regress.exe /link mk4.lib
+$regSrc = @($reg | ForEach-Object { "$root\tests\$_.cpp" })
+Run "build regress" cl @flags @regSrc /Fe:regress.exe /link mk4.lib
 
 New-Item -ItemType Directory tests | Out-Null
 Copy-Item "$root\unix\reversed" .
@@ -56,7 +60,8 @@ Run "tfuzz" .\tfuzz.exe
 Run "tcorrupt" .\tcorrupt.exe
 
 if ($LargeArgs -ne "") {
-  Run "tlarge $LargeArgs" .\tlarge.exe tlarge.mk @($LargeArgs -split " ")
+  $largeList = @($LargeArgs -split " ")
+  Run "tlarge $LargeArgs" .\tlarge.exe tlarge.mk @largeList
   Remove-Item -Force tlarge.mk, tlarge_ints.mk -ErrorAction SilentlyContinue
 }
 Write-Host "== all passed ($Arch)"
