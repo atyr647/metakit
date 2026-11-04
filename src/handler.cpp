@@ -296,29 +296,58 @@ c4_Field &c4_HandlerSeq::Field(int index_)const {
 
 void c4_HandlerSeq::Prepare(const t4_byte **ptr_, bool selfDesc_) {
   if (ptr_ != 0) {
-    d4_dbgdef(t4_i32 sias = )c4_Column::PullValue(*ptr_);
-    d4_assert(sias == 0); // not yet
+    // All of this is read from a datafile which may be damaged: what is not
+    // right is not used, see c4_WalkGuard.  It is for the caller to look
+    // whether this went wrong (and then it is for the caller to stop).
+    t4_i32 sias = c4_Column::PullValue(*ptr_);
+    if (sias != 0) {
+      c4_WalkGuard::Fail(); // not yet
+      return ;
+    }
 
     if (selfDesc_) {
       t4_i32 n = c4_Column::PullValue(*ptr_);
+      if (c4_WalkGuard::Bad() || !c4_WalkGuard::Has(*ptr_, n)) {
+        c4_WalkGuard::Fail();
+        return ;
+      }
+
       if (n > 0) {
         c4_String s = "[" + c4_String((const char*) * ptr_, n) + "]";
         const char *desc = s;
 
         c4_Field *f = d4_new c4_Field(desc);
-        d4_assert(! *desc);
+        if (*desc != 0) {
+          // what is described does not end where it should
+          delete f;
+          c4_WalkGuard::Fail();
+          return ;
+        }
 
         Restructure(*f, false);
         *ptr_ += n;
       }
     }
 
-    int rows = (int)c4_Column::PullValue(*ptr_);
+    t4_i32 rows = c4_Column::PullValue(*ptr_);
+    if (c4_WalkGuard::Bad())
+      return ;
+
+    // Rows which have no data at all take no space in the datafile, but
+    // there is a limit to how many can be believed to be there
+    if (rows > 0 && rows > 0x7FFFFFF && rows / 8 > Persist()->Strategy().FileSize()
+      + 1000000) {
+      c4_WalkGuard::Fail();
+      return ;
+    }
+
     if (rows > 0) {
       SetNumRows(rows);
 
+      // (when something is wrong the rest is defined as having no data, so
+      // that all columns are consistent with the number of rows)
       for (int i = 0; i < NumFields(); ++i)
-        NthHandler(i).Define(rows, ptr_);
+        NthHandler(i).Define(rows, c4_WalkGuard::Bad() ? 0 : ptr_);
     }
   }
 }

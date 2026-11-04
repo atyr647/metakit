@@ -400,10 +400,19 @@ void c4_FormatB::Define(int, const t4_byte **ptr_) {
     _memoCol.FetchBytes(0, _memoCol.ColSize(), walk, true);
 
     const t4_byte *p = walk.Contents();
+    const t4_byte *end = p + walk.Size();
 
-    for (int row = 0; p < walk.Contents() + walk.Size(); ++row) {
+    // this is read from the datafile, which may be damaged, see c4_WalkGuard
+    c4_WalkGuard guard(end, true);
+
+    for (int row = 0; p < end; ++row) {
       row += c4_Column::PullValue(p);
-      d4_assert(row < _memos.GetSize());
+      if (c4_WalkGuard::Bad() || row < 0 || row >= _memos.GetSize() ||
+        _memos.GetAt(row) != 0) {
+        // not a row of this column, or one which already has a memo
+        _data.Persist()->SetDamaged();
+        break;
+      }
 
       c4_Column *mc = d4_new c4_Column(_data.Persist());
       d4_assert(mc != 0);
@@ -412,7 +421,10 @@ void c4_FormatB::Define(int, const t4_byte **ptr_) {
       mc->PullLocation(p);
     }
 
-    d4_assert(p == walk.Contents() + walk.Size());
+    if (c4_WalkGuard::Bad())
+      _data.Persist()->SetDamaged();
+    else
+      d4_assert(p == end);
   }
 }
 
@@ -552,15 +564,30 @@ void c4_FormatB::InitOffsets(c4_ColOfInts &sizes_) {
 
   if (_data.ColSize() > 0) {
     t4_i32 total = 0;
+    bool ok = true;
 
     for (int r = 0; r < rows; ++r) {
       int n = sizes_.GetInt(r);
-      d4_assert(n >= 0);
+      if (n < 0 || n > _data.ColSize() - total) {
+        ok = false; // the sizes do not fit the data
+        break;
+      }
       total += n;
       _offsets.SetAt(r + 1, total);
     }
 
-    d4_assert(total == _data.ColSize());
+    if (ok && total != _data.ColSize())
+      ok = false;
+
+    if (!ok) {
+      // a damaged datafile: the data is not used, all items are empty
+      for (int r = 0; r <= rows; ++r)
+        _offsets.SetAt(r, 0);
+      _data.SetLocation(0, 0);
+      c4_WalkGuard::Fail();
+      if (_data.Persist() != 0)
+        _data.Persist()->SetDamaged();
+    }
   }
 
 }
@@ -956,20 +983,33 @@ void c4_FormatV::SetupAllSubviews() {
     _data.FetchBytes(0, _data.ColSize(), temp, true);
     const t4_byte *ptr = temp.Contents();
 
+    // this is read from the datafile, which may be damaged, see c4_WalkGuard
+    const t4_byte *end = ptr + temp.Size();
+    c4_WalkGuard guard(end, true);
+
     for (int r = 0; r < _subSeqs.GetSize(); ++r) {
       // don't materialize subview if it is empty
       // duplicates code which is in c4_HandlerSeq::Prepare
       const t4_byte *p2 = ptr;
-      d4_dbgdef(t4_i32 sias = )c4_Column::PullValue(p2);
-      d4_assert(sias == 0); // not yet
+      t4_i32 sias = c4_Column::PullValue(p2);
+      d4_assert(sias == 0 || c4_WalkGuard::Bad()); // not yet
 
-      if (c4_Column::PullValue(p2) > 0)
+      if (!c4_WalkGuard::Bad() && c4_Column::PullValue(p2) > 0)
         At(r).Prepare(&ptr, false);
       else
         ptr = p2;
+
+      if (c4_WalkGuard::Bad()) {
+        // the rest of the subviews is not there: they are empty
+        if (_subSeqs.GetAt(r) != 0)
+          ForgetSubview(r);
+        Owner().Persist()->SetDamaged();
+        break;
+      }
     }
 
-    d4_assert(ptr == temp.Contents() + temp.Size());
+    if (!c4_WalkGuard::Bad())
+      d4_assert(ptr == end);
   }
 }
 

@@ -81,6 +81,8 @@ class c4_Persist {
     int _mode;
     bool _owned;
     bool _tainted; // an operation was abandoned (c4_SizeError), see Taint
+    bool _damaged; // something in the datafile was not right, see SetDamaged
+    t4_fpos _knownLimit; // the size of the datafile, as far as found out
 
     // used for on-the-fly conversion of old-format datafiles
     t4_byte *_oldBuf;
@@ -113,10 +115,19 @@ class c4_Persist {
     void Taint();
     bool IsTainted()const;
 
+    // Flags that the datafile was found to be damaged, as it was read.  What
+    // is wrong is not used (it is empty), the rest is, see c4_WalkGuard.
+    void SetDamaged();
+    bool IsDamaged()const;
+
     bool LoadIt(c4_Column &walk_);
     void LoadAll();
 
     t4_fpos LookupAside(int id_);
+
+    // is this location (a position, which if negative is an aside id) one
+    // where there can be data, for the datafile as it is
+    bool IsLocationOk(t4_fpos pos_, t4_fpos size_);
     void ApplyAside(int id_, c4_Column &col_);
 
     void OccupySpace(t4_fpos pos_, t4_fpos len_);

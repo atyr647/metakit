@@ -615,12 +615,18 @@ c4_StringRef &c4_StringRef::operator = (const char *value_) {
 /////////////////////////////////////////////////////////////////////////////
 
 c4_ViewRef::operator c4_View()const {
+  // what is in a datafile does not have to be what the caller expects: what is
+  // not a view in the datafile is not one, and may not be used as a pointer
+  c4_View container(_cursor._seq);
+  int col = container.FindProperty(_property.GetId());
+  if (col < 0 || container.NthProperty(col).Type() != 'V')
+    return (c4_Sequence*)0;
+
   c4_Bytes result;
-  if (!GetData(result))
+  if (!GetData(result) || result.Size() != sizeof(c4_Sequence*))
     return (c4_Sequence*)0;
   // resolve ambiguity
 
-  d4_assert(result.Size() == sizeof(c4_Sequence*));
   return *(c4_Sequence *const*)result.Contents();
 }
 

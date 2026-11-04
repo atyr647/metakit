@@ -190,7 +190,10 @@ c4_Storage::c4_Storage() {
 
 c4_Storage::c4_Storage(c4_Strategy &strategy_, bool owned_, int mode_) {
   Initialize(strategy_, owned_, mode_);
-  Persist()->LoadAll();
+  c4_Persist *pers = Persist();
+  pers->LoadAll();
+  // adjust our copy when the root view has been replaced (damaged datafile)
+  *(c4_View*)this = &pers->Root();
 }
 
 c4_Storage::c4_Storage(const char *fname_, int mode_) {
@@ -198,8 +201,12 @@ c4_Storage::c4_Storage(const char *fname_, int mode_) {
   strat->DataOpen(fname_, mode_);
 
   Initialize(*strat, true, mode_);
-  if (strat->IsValid())
-    Persist()->LoadAll();
+  if (strat->IsValid()) {
+    c4_Persist *pers = Persist();
+    pers->LoadAll();
+    // adjust our copy when the root view has been replaced (damaged datafile)
+    *(c4_View*)this = &pers->Root();
+  }
 }
 
 c4_Storage::c4_Storage(const c4_View &root_) {
@@ -372,6 +379,16 @@ bool c4_Storage::Rollback(bool full_) {
   // adjust our copy when the root view has been replaced
   *(c4_View*)this = &pers->Root();
   return f;
+}
+
+/** Tell whether something in the datafile was found to be damaged
+ *
+ *  Whatever was not right in the datafile is not used (it shows up as empty),
+ *  the rest is.  This is true after opening, or after Rollback, if the file
+ *  needed this.  Committing then replaces the damaged contents.
+ */
+bool c4_Storage::IsDamaged()const {
+  return Persist()->IsDamaged();
 }
 
 /// Set storage up to always call Commit in the destructor
@@ -548,7 +565,8 @@ void c4_StreamStrategy::DataWrite(t4_fpos pos_, const void *buffer_, int length_
 }
 
 t4_fpos c4_StreamStrategy::FileSize() {
-  return _position;
+  // a buffer has a size of its own (the position moves with every access)
+  return _buffer != 0 ? _buflen: _position;
 }
 
 /////////////////////////////////////////////////////////////////////////////

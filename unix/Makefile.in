@@ -76,7 +76,7 @@ tcl: Makefile Mk4tcl$(LIBEXT)
 
 python: Makefile Mk4py$(LIBEXT)
 
-test: Makefile libmk4$(LIBEXT) regress twide tfuzz
+test: Makefile libmk4$(LIBEXT) regress twide tfuzz tcorrupt
 	test -d tests || mkdir tests
 	-test -d ../tests/ok/CVS && (test -d tests/CVS || mkdir tests/CVS)
 	test -f reversed || cp $(srcdir)/reversed .
@@ -84,10 +84,12 @@ test: Makefile libmk4$(LIBEXT) regress twide tfuzz
 	diff --exclude=.svn $(srcdir)/../tests/ok tests
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./twide
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tfuzz
+	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tcorrupt
 
 # the randomized tests with many more scenarios, which takes a few minutes
-test-fuzz: Makefile libmk4$(LIBEXT) tfuzz
+test-fuzz: Makefile libmk4$(LIBEXT) tfuzz tcorrupt
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. TFUZZ_LONG=1 ./tfuzz
+	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. TCORRUPT_LONG=1 ./tcorrupt
 
 # Needs several GB of disk and RAM and takes a while, so not part of "test".
 # Example: make test-large LARGE_ARGS="6 512 --expect-all"
@@ -127,7 +129,7 @@ install-python: Mk4py$(LIBEXT)
 
 clean:
 	rm -f *$(LIBEXT) *.o
-	rm -f $(DEMOS) struct regress twide tfuzz tfuzz_*.mk tlarge tlarge.mk tlarge_ints.mk myfile.dat secret.dat twide_*.mk
+	rm -f $(DEMOS) struct regress twide tfuzz tcorrupt tfuzz_*.mk tlarge tlarge.mk tlarge_ints.mk myfile.dat secret.dat twide_*.mk
 	rm -rf tests/[a-z]*
 
 distclean: clean
@@ -195,6 +197,10 @@ twide: $(srcdir)/../tests/twide.cpp libmk4$(LIBEXT)
 tfuzz: $(srcdir)/../tests/tfuzz.cpp libmk4$(LIBEXT)
 	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
 		$(srcdir)/../tests/tfuzz.cpp libmk4$(LIBEXT) @LIBS@
+
+tcorrupt: $(srcdir)/../tests/tcorrupt.cpp libmk4$(LIBEXT)
+	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
+		$(srcdir)/../tests/tcorrupt.cpp libmk4$(LIBEXT) @LIBS@
 
 tlarge: $(srcdir)/../tests/tlarge.cpp libmk4$(LIBEXT)
 	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \

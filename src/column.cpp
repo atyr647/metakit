@@ -36,6 +36,36 @@ void f4_memmove(void *to_, const void *from_, int n_) {
 #endif 
 
 /////////////////////////////////////////////////////////////////////////////
+// reading the structure of a datafile, which may be damaged
+
+static const t4_byte *sWalkEnd = 0;
+static bool sWalkBad = false;
+
+c4_WalkGuard::c4_WalkGuard(const t4_byte *end_, bool fresh_): _prevEnd
+  (sWalkEnd) {
+  sWalkEnd = end_;
+  if (fresh_)
+    sWalkBad = false;
+}
+
+c4_WalkGuard::~c4_WalkGuard() {
+  sWalkEnd = _prevEnd;
+}
+
+bool c4_WalkGuard::Bad() {
+  return sWalkBad;
+}
+
+void c4_WalkGuard::Fail() {
+  sWalkBad = true;
+}
+
+bool c4_WalkGuard::Has(const t4_byte *ptr_, t4_i32 count_) {
+  return sWalkEnd == 0 || (count_ >= 0 && ptr_ <= sWalkEnd && count_ <= sWalkEnd
+    - ptr_);
+}
+
+/////////////////////////////////////////////////////////////////////////////
 // column size limit
 
 #include <stdio.h>
@@ -192,15 +222,30 @@ void c4_Column::SetLocation(t4_fpos pos_, t4_i32 size_) {
 void c4_Column::PullLocation(const t4_byte * &ptr_) {
   d4_assert(_segments.GetSize() == 0);
 
+  // This is where the datafile says where its data is, and it has to be in
+  // the datafile, or else it is not used: the column is empty then.
   _size = PullValue(ptr_);
-  d4_assert(_size >= 0); // the engine never stores more than 31 bits of size
   _position = 0;
+  if (_size < 0) {
+    _size = 0;
+    c4_WalkGuard::Fail();
+  }
   if (_size > 0) {
     _position = PullValue64(ptr_);
-    if (_position > 0) {
-      d4_assert(_persist != 0);
+
+    // (a negative position is the way to an aside file, see SetupSegments)
+    bool ok = _persist != 0 && !(sWalkEnd != 0 && sWalkBad) &&
+      _persist->IsLocationOk(_position, _size);
+
+    if (!ok) {
+      // there is no such data, which is no data at all
+      _position = 0;
+      _size = 0;
+      c4_WalkGuard::Fail();
+      if (_persist != 0)
+        _persist->SetDamaged();
+    } else if (_position > 0)
       _persist->OccupySpace(_position, _size);
-    }
   }
 
   _dirty = false;
@@ -810,16 +855,27 @@ Negative values are stored as a zero byte plus positive value.
  */
 
 t4_i32 c4_Column::PullValue(const t4_byte * &ptr_) {
+  if (sWalkEnd != 0 && (sWalkBad || ptr_ >= sWalkEnd)) {
+    sWalkBad = true;
+    return 0;
+  }
+
   t4_i32 mask =  *ptr_ ? 0 : ~0;
 
-  t4_i32 v = 0;
-  for (;;) {
+  // unsigned, so what is too much wraps around instead of being undefined
+  unsigned long v = 0;
+  for (int n = 0;; ++n) {
+    if (sWalkEnd != 0 && (ptr_ >= sWalkEnd || n > 10)) {
+      sWalkBad = true; // it does not end where it must, or is too long
+      return 0;
+    }
+
     v = (v << 7) +  *ptr_;
     if (*ptr_++ &0x80)
       break;
   }
 
-  return mask ^ (v - 0x80); // oops, last byte had bit 7 set
+  return mask ^ (t4_i32)(v - 0x80); // oops, last byte had bit 7 set
 }
 
 void c4_Column::PushValue(t4_byte * &ptr_, t4_i32 v_) {
@@ -850,16 +906,26 @@ Datafile positions use these, so the format only grows for files over 2 Gb.
  */
 
 t4_fpos c4_Column::PullValue64(const t4_byte * &ptr_) {
+  if (sWalkEnd != 0 && (sWalkBad || ptr_ >= sWalkEnd)) {
+    sWalkBad = true;
+    return 0;
+  }
+
   t4_fpos mask =  *ptr_ ? 0 : ~(t4_fpos)0;
 
-  t4_fpos v = 0;
-  for (;;) {
+  unsigned long long v = 0;
+  for (int n = 0;; ++n) {
+    if (sWalkEnd != 0 && (ptr_ >= sWalkEnd || n > 10)) {
+      sWalkBad = true;
+      return 0;
+    }
+
     v = (v << 7) +  *ptr_;
     if (*ptr_++ &0x80)
       break;
   }
 
-  return mask ^ (v - 0x80); // oops, last byte had bit 7 set
+  return mask ^ (t4_fpos)(v - 0x80); // oops, last byte had bit 7 set
 }
 
 void c4_Column::PushValue64(t4_byte * &ptr_, t4_fpos v_) {
@@ -1240,7 +1306,17 @@ void c4_ColOfInts::SetRowCount(int numRows_) {
   _numRows = numRows_;
   if (numRows_ > 0) {
     int w = CalcAccessWidth(numRows_, ColSize());
-    d4_assert(w >= 0);
+
+    // If the size of the column does not fit its number of rows, the datafile
+    // is damaged: all of the integers are then zero, which is no data at all.
+    if (w < 0 || w > 64) {
+      c4_WalkGuard::Fail();
+      if (Persist() != 0)
+        Persist()->SetDamaged();
+      SetLocation(0, 0);
+      w = 0;
+    }
+
     SetAccessWidth(w);
   }
 }

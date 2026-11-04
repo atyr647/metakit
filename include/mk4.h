@@ -607,6 +607,7 @@ class c4_Storage: public c4_View {
 
     bool Commit(bool = false);
     bool Rollback(bool = false);
+    bool IsDamaged()const;
 
     c4_ViewRef View(const char*);
     c4_View GetAs(const char*);

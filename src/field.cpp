@@ -23,6 +23,10 @@ class c4_Field;
 /////////////////////////////////////////////////////////////////////////////
 // c4_Field
 
+// how deep a description is followed, a description is not always right
+static int sFieldDepth = 0;
+static const int kMaxFieldDepth = 100;
+
 c4_Field::c4_Field(const char * &description_, c4_Field *parent_): _type(0) {
     _indirect = this;
 
@@ -32,6 +36,15 @@ c4_Field::c4_Field(const char * &description_, c4_Field *parent_): _type(0) {
     if (p != 0 && p < description_ + n) {
         _name = c4_String(description_, p - description_);
         _type = p[1] &~0x20; // force to upper case
+
+        // a type which is not known is an integer property, as is made of it
+        // in f4_CreateFormat: what is described then is what there is
+        if (strchr("IBSVM"
+#if !q4_TINY
+          "LFD"
+#endif
+          , _type) == 0 || _type == 0)
+          _type = 'I';
     } else {
         _name = c4_String(description_, n);
         _type = 'S';
@@ -39,20 +52,23 @@ c4_Field::c4_Field(const char * &description_, c4_Field *parent_): _type(0) {
 
     description_ += n;
 
-    if (*description_ == '[') {
+    if (*description_ == '[' && sFieldDepth < kMaxFieldDepth) {
         ++description_;
         _type = 'V';
+        ++sFieldDepth;
 
-        if (*description_ == '^') {
+        // "^" is for a view which has the structure of its parent, and has no
+        // subfields of its own (else it is just a funny name)
+        if (parent_ != 0 && description_[0] == '^' && description_[1] == ']') {
             ++description_;
             _indirect = parent_;
-            d4_assert(*description_ == ']');
         }
 
         if (*description_ == ']')
           ++description_;
-        else
-        do {
+        else {
+          bool more;
+          do {
             // 2004-01-20 ignore duplicate property names
             // (since there is no good way to report errors at this point)
             c4_Field *sf = d4_new c4_Field(description_, this);
@@ -64,7 +80,16 @@ c4_Field::c4_Field(const char * &description_, c4_Field *parent_): _type(0) {
             }
             if (sf != 0)
               _subFields.Add(sf);
-        } while (*description_++ == ',');
+
+            // a comma goes on with the next one, a ']' is the end (a
+            // description which stops short is not read beyond its end)
+            more = *description_ == ',';
+            if (*description_ != 0)
+              ++description_;
+          } while (more);
+        }
+
+        --sFieldDepth;
     }
 }
 

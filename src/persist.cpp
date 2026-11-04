@@ -1122,7 +1122,7 @@ t4_i32 _oldSeek;
 
 c4_Persist::c4_Persist(c4_Strategy &strategy_, bool owned_, int mode_): _space
   (0), _strategy(strategy_), _root(0), _differ(0), _fCommit(0), _mode(mode_),
-  _owned(owned_), _tainted(false), _oldBuf(0), _oldCurr(0), _oldLimit(0), _oldSeek
+  _owned(owned_), _tainted(false), _damaged(false), _knownLimit(0), _oldBuf(0), _oldCurr(0), _oldLimit(0), _oldSeek
   ( - 1) {
   if (_mode == 1)
     _space = d4_new c4_Allocator;
@@ -1191,6 +1191,14 @@ bool c4_Persist::IsTainted()const {
   return _tainted;
 }
 
+void c4_Persist::SetDamaged() {
+  _damaged = true;
+}
+
+bool c4_Persist::IsDamaged()const {
+  return _damaged;
+}
+
 bool c4_Persist::Commit(bool full_) {
   // 1-Mar-1999, new semantics! return success status of commits
   _strategy._failure = 0;
@@ -1227,6 +1235,7 @@ bool c4_Persist::Rollback(bool full_) {
   // empty database
   _strategy._failure = 0;
   _tainted = false;
+  _damaged = false; // it is found again, if it still is
 
   _root->DetachFromParent();
   _root->DetachFromStorage(true);
@@ -1251,6 +1260,7 @@ bool c4_Persist::Rollback(bool full_) {
 
 bool c4_Persist::LoadIt(c4_Column &walk_) {
   t4_fpos limit = _strategy.FileSize();
+  _knownLimit = limit - _strategy._baseOffset;
   if (_strategy._failure != 0)
     return false;
 
@@ -1264,8 +1274,15 @@ bool c4_Persist::LoadIt(c4_Column &walk_) {
     return false;
   }
 
-  if (_strategy._rootLen > 0)
+  if (_strategy._rootLen > 0) {
+    // the root is somewhere in the datafile, else this is not one to use
+    if (_strategy._rootPos <= 0 || _strategy._rootPos + _strategy._rootLen >
+      limit - _strategy._baseOffset) {
+      _damaged = true;
+      return false;
+    }
     walk_.SetLocation(_strategy._rootPos, _strategy._rootLen);
+  }
 
   // if the file size has increased, we must remap
   if (_strategy._mapStart != 0 && _strategy.FileSize() > _strategy._baseOffset 
@@ -1318,9 +1335,29 @@ void c4_Persist::LoadAll() {
     OccupySpace(_strategy._rootPos, _strategy._rootLen);
 
     // define and fill the root table 
+    // (the structure comes from the datafile, which may be damaged: if it
+    // is, then nothing is used of it, see c4_WalkGuard)
     const t4_byte *ptr = _rootWalk.Contents();
-    _root->Prepare(&ptr, true);
-    d4_assert(ptr == _rootWalk.Contents() + _rootWalk.Size());
+    {
+      c4_WalkGuard guard(ptr + _rootWalk.Size(), true);
+      _root->Prepare(&ptr, true);
+
+      if (!c4_WalkGuard::Bad() && ptr != _rootWalk.Contents() + _rootWalk.Size
+        ())
+        c4_WalkGuard::Fail(); // there is more than there should be
+
+      if (c4_WalkGuard::Bad()) {
+        _damaged = true;
+
+        _root->DetachFromParent();
+        _root->DetachFromStorage(true);
+        _root = 0;
+
+        c4_HandlerSeq *seq = d4_new c4_HandlerSeq(this);
+        seq->DefineRoot();
+        SetRoot(seq);
+      }
+    }
   }
 }
 
@@ -1401,13 +1438,18 @@ c4_HandlerSeq *c4_Persist::Load(c4_Stream *stream_) {
 
   c4_StreamStrategy *strat = d4_new c4_StreamStrategy(limit);
   strat->_bytesFlipped = head.IsFlipped();
-  strat->DataWrite(strat->FileSize() - strat->_baseOffset, &head, sizeof head);
+  strat->DataWrite(0, &head, sizeof head);
 
-  while (strat->FileSize() - strat->_baseOffset < limit) {
+  for (t4_fpos got = sizeof head; got < limit;) {
     char buffer[4096];
     int n = stream_->Read(buffer, sizeof buffer);
-    d4_assert(n > 0);
-    strat->DataWrite(strat->FileSize() - strat->_baseOffset, buffer, n);
+    if (n <= 0) {
+      // the stream is shorter than its header says
+      delete strat;
+      return 0;
+    }
+    strat->DataWrite(got, buffer, n);
+    got += n;
   }
 
   c4_Persist *pers = d4_new c4_Persist(*strat, true, 0);
@@ -1415,19 +1457,27 @@ c4_HandlerSeq *c4_Persist::Load(c4_Stream *stream_) {
   seq->DefineRoot();
   pers->SetRoot(seq);
 
-  c4_Column walk(pers);
-  if (!pers->LoadIt(walk)) {
+  bool ok = false;
+  {
+    c4_Column walk(pers);
+    if (pers->LoadIt(walk)) {
+      c4_Bytes tempWalk;
+      walk.FetchBytes(0, walk.ColSize(), tempWalk, true);
+
+      // the structure comes from a stream which may be damaged, see
+      // c4_WalkGuard: it is not used at all if it is
+      const t4_byte *ptr = tempWalk.Contents();
+      c4_WalkGuard guard(ptr + tempWalk.Size(), true);
+      seq->Prepare(&ptr, true);
+      ok = !c4_WalkGuard::Bad() && ptr == tempWalk.Contents() + tempWalk.Size();
+    }
+  }
+
+  if (!ok) {
     seq->IncRef();
     seq->DecRef(); // a funny way to delete
     return 0;
   }
-
-  c4_Bytes tempWalk;
-  walk.FetchBytes(0, walk.ColSize(), tempWalk, true);
-
-  const t4_byte *ptr = tempWalk.Contents();
-  seq->Prepare(&ptr, true);
-  d4_assert(ptr == tempWalk.Contents() + tempWalk.Size());
 
   return seq;
 }
@@ -1445,6 +1495,29 @@ void c4_Persist::Save(c4_Stream *stream_, c4_HandlerSeq &root_) {
   c4_SaveContext ar(strat, true, 0, 0, 0);
   c4_Bytes tempWalk;
   ar.SaveIt(root_, 0, tempWalk);
+}
+
+bool c4_Persist::IsLocationOk(t4_fpos pos_, t4_fpos size_) {
+  if (size_ < 0)
+    return false;
+
+  // (the datafile can only have grown since last looked at)
+  if (pos_ < 0 || pos_ + size_ > _knownLimit)
+    _knownLimit = _strategy.FileSize() - _strategy._baseOffset;
+
+  if (pos_ < 0) {
+    // Data which is in the aside file: this needs one, and an id in it.  The
+    // size is the one after the changes, so only the start of what they are
+    // applied to can be looked at (it is nothing if the column is new).
+    t4_fpos id = ~pos_;
+    if (_differ == 0 || id >= _differ->_diffs.GetSize())
+      return false;
+
+    pos_ = _differ->BaseOfDiff((int)id);
+    return pos_ >= 0 && pos_ <= _knownLimit;
+  }
+
+  return pos_ > 0 && pos_ + size_ <= _knownLimit;
 }
 
 t4_fpos c4_Persist::LookupAside(int id_) {

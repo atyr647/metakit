@@ -29,6 +29,25 @@
     over 5000 size errors, which were checked against a model, and also under
     AddressSanitizer with leak detection (tests/tfuzz.cpp, tests/twide.cpp).
 
+    Damaged datafiles: what a datafile says about itself (which views and
+    properties there are, how many rows, how large and where the columns are)
+    is now checked as it is read, where it was believed before.  A datafile
+    which is cut short, overwritten or otherwise damaged can no longer make
+    the library read beyond what is there, allocate absurd amounts, loop or
+    crash: whatever is not right (a column which is not inside the datafile,
+    sizes which do not fit, a description which is not one) is not used and
+    shows up as empty, the rest is used as usual.  If nothing of the
+    structure can be trusted the storage is empty.  c4_Storage::IsDamaged()
+    tells that this happened (after opening, or after Rollback); committing
+    then replaces what was damaged, so a program which wants to keep the
+    datafile as it is should not commit.  Datafiles which are not damaged
+    are read exactly as before.  This was tested by damaging valid datafiles
+    in random ways (tests/tcorrupt.cpp, with AddressSanitizer: 25000 files).
+    Also: c4_ViewRef (as in storage.View("name")) is empty for a property
+    which is not a view, instead of reading something else as a pointer, and
+    c4_StreamStrategy::FileSize now is the size of the buffer, and not where
+    it was last accessed.
+
     C++ API: file positions and sizes are of the new type t4_fpos (a 64-bit
     integer where the compiler has one) in c4_Strategy and c4_FileStrategy:
     DataRead, DataWrite, DataCommit, FileSize, SetBase, EndOfData, and the

@@ -32,6 +32,25 @@ extern t4_i32 f4_MaxColumnSize;
 // This is called before anything is changed, and does not return.
 extern void f4_ColumnTooLarge(t4_fpos wanted_);
 
+// Everything in the structure of a datafile (what views there are, how many
+// rows, where the columns are) is read from bytes which cannot be trusted:
+// the datafile may be damaged.  While one is read, this holds where it ends, so
+// that what is read can not go beyond that, and whether something was wrong
+// with it, which is for the one who started the reading to ask.  What is not
+// right is not used, it ends up as empty.
+class c4_WalkGuard {
+    const t4_byte *_prevEnd;
+
+  public:
+    // fresh: start with nothing wrong yet (else it is passed on to the outer)
+    c4_WalkGuard(const t4_byte *end_, bool fresh_);
+    ~c4_WalkGuard();
+
+    static bool Bad();
+    static void Fail();
+    static bool Has(const t4_byte *ptr_, t4_i32 count_);
+};
+
 class c4_Column {
     c4_PtrArray _segments;
     t4_fpos _position;
