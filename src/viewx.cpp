@@ -158,7 +158,7 @@ void c4_Sequence::InsertAt(int index_, c4_Cursor newElem_, int count_) {
 
   c4_Notifier change(this);
   if (GetDependencies())
-    change.StartInsertAt(index_, newElem_, count_);
+    change.StartInsertAt(index_, &newElem_, count_);
 
   SetNumRows(NumRows() + count_);
 

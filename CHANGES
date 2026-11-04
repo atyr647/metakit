@@ -106,11 +106,13 @@
     thousand.  "tfuzz -v <seed>" shows what happens in one scenario.
 
     Sanitizers: tests/sanitize.sh runs the tests with AddressSanitizer and
-    UndefinedBehaviorSanitizer.  No memory errors or leaks were found.  Two
-    cases of undefined behaviour in the engine were fixed (an overflow of
-    the hash for hashed views, which now wraps without changing any value,
-    and memcmp of empty values).  Two are left: reference binding to a null
-    c4_Cursor in the notification code, which means "default rows" there.
+    UndefinedBehaviorSanitizer, and they report nothing: no memory errors, no
+    leaks, no undefined behaviour.  Three cases of the latter were fixed: an
+    overflow of the hash for hashed views, which now wraps without changing any
+    value; memcmp of empty values; and the notification code, which bound a
+    reference to a null c4_Cursor to say that a row has no values (a row gets
+    into a derived view because one of its properties was set).
+    c4_Notifier::StartInsertAt takes a pointer now, which may be null.
 
     Mk4tcl bug found and fixed: "mk::file aside" did not detach the views
     which were attached to the datafile, as commit, rollback and load do,

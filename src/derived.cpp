@@ -303,7 +303,7 @@ c4_Notifier *c4_FilterSeq::PreChange(c4_Notifier &nf_) {
       if (r >= 0 && !includeRow)
         chg->StartRemoveAt(r, 1);
       else if (r < 0 && includeRow)
-        chg->StartInsertAt(PosInMap(nf_._index),  *nf_._cursor, 1);
+        chg->StartInsertAt(PosInMap(nf_._index), nf_._cursor, 1);
       else if (includeRow) {
         d4_assert(r >= 0);
 
@@ -320,7 +320,7 @@ c4_Notifier *c4_FilterSeq::PreChange(c4_Notifier &nf_) {
 
       d4_assert(nf_._cursor != 0);
       if (Match(nf_._cursor->_index,  *nf_._cursor->_seq))
-        chg->StartInsertAt(i,  *nf_._cursor, nf_._count);
+        chg->StartInsertAt(i, nf_._cursor, nf_._count);
     }
     break;
 

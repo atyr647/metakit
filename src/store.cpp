@@ -84,10 +84,10 @@ void c4_Notifier::StartSetAt(int index_, c4_Cursor &cursor_) {
   Notify();
 }
 
-void c4_Notifier::StartInsertAt(int i_, c4_Cursor &cursor_, int n_) {
+void c4_Notifier::StartInsertAt(int i_, c4_Cursor *cursor_, int n_) {
   _type = kInsertAt;
   _index = i_;
-  _cursor = &cursor_;
+  _cursor = cursor_;
   _count = n_;
 
   Notify();
@@ -472,7 +472,7 @@ c4_Notifier *c4_DerivedSeq::PreChange(c4_Notifier &nf_) {
       ;
     break;
 
-    case c4_Notifier::kInsertAt: chg->StartInsertAt(nf_._index,  *nf_._cursor,
+    case c4_Notifier::kInsertAt: chg->StartInsertAt(nf_._index, nf_._cursor,
       nf_._count);
     break;
 

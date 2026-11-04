@@ -5,10 +5,8 @@
 #
 # Usage: tests/sanitize.sh [workdir] [tfuzz]
 #
-# Memory errors and leaks fail the run.  Two reports of undefined behaviour
-# are known and left alone: the notification code in store.cpp and
-# derived.cpp binds a reference to a null c4_Cursor, which is how it says
-# "default rows".  Any other report fails the run as well.
+# Memory errors and leaks fail the run, and so does any report of undefined
+# behaviour.
 
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,14 +36,13 @@ run() {
     echo "FAILED: memory error"
     exit 1
   fi
-  unknown=$(grep "runtime error" "$name.err" |
-    grep -v "reference binding to null pointer of type 'struct c4_Cursor'" || true)
+  unknown=$(grep "runtime error" "$name.err" || true)
   if [ -n "$unknown" ]; then
     echo "$unknown" | sort -u | head
     echo "FAILED: undefined behaviour"
     exit 1
   fi
-  echo "   clean ($(grep -c "runtime error" "$name.err") known reports)"
+  echo "   clean"
 }
 
 run regress ./regress

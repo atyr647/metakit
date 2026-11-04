@@ -42,7 +42,9 @@ class c4_Notifier {
     bool HasDependents()const;
 
     void StartSetAt(int index_, c4_Cursor &cursor_);
-    void StartInsertAt(int index_, c4_Cursor &cursor_, int count_);
+    // The cursor is null if the rows have no values, which is so if a row
+    // gets into a derived view because one property of it was set.
+    void StartInsertAt(int index_, c4_Cursor *cursor_, int count_);
     void StartRemoveAt(int index_, int count_);
     void StartMove(int from_, int to_);
     void StartSet(int index_, int propId_, const c4_Bytes &buf_);
