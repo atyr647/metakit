@@ -1,0 +1,608 @@
+// twide.cpp -- Test program for the wide file marks used beyond 2 Gb
+// $Id$
+// This is part of Metakit, the homepage is http://www.equi4.com/metakit.html
+
+// Datafiles which need positions of more than 31 bits get "wide" marks, see
+// src/marks.h.  Such files are too large for a regular test, so these tests
+// use a hook (f4_WideAbove) to switch to the wide marks at any size, and a
+// pretend "file" which only has the marks, to try positions over 4 Gb.
+//
+// This program is built and run by "make test" on Unix, next to regress.
+
+#include "mk4.h"
+#include "mk4io.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// the hook which sets the size above which wide marks are used
+extern t4_fpos f4_WideAbove;
+
+static const t4_fpos kStdLimit = 0x7fffffff - 64; // the default
+static int sFailures = 0;
+static int sChecks = 0;
+
+#define CHECK(c) do { ++sChecks; if (!(c)) { \
+    fprintf(stderr, "CHECK FAILED line %d: %s\n", __LINE__, #c); \
+    ++sFailures; } } while (0)
+
+/////////////////////////////////////////////////////////////////////////////
+// a deterministic workload, and a way to boil down the contents to a number
+
+static void Mutate(c4_View v_, int round_, int kind_) {
+  c4_IntProp pi("i");
+  c4_StringProp ps("s");
+  c4_BytesProp pb("b");
+
+  if (kind_ == 0) {
+    // add rows, some with memos large enough to be stored separately
+    for (int i = 0; i < 200; ++i) {
+      char tmp[40];
+      sprintf(tmp, "s%d-%d", round_, i);
+      int n = v_.Add(pi[i + round_ * 1000] + ps[tmp]);
+      if (i % 40 == 0) {
+        int len = 9000 + i * 50;
+        t4_byte *b = (t4_byte*)malloc(len);
+        for (int k = 0; k < len; ++k)
+          b[k] = (t4_byte)(k * round_ + i);
+        pb(v_[n]).SetData(c4_Bytes(b, len));
+        free(b);
+      }
+    }
+  } else if (kind_ == 1) {
+    // remove half, this leaves room in the file for later commits
+    if (v_.GetSize() > 20)
+      v_.RemoveAt(3, v_.GetSize() / 2);
+  } else {
+    // a tiny change
+    if (v_.GetSize() > 5)
+      pi(v_[2]) = round_ * 77;
+  }
+}
+
+// reduce the contents of the "a" view to a number, -1 if it cannot be read
+static long Signature(const char *fn_, int *rows_ = 0) {
+  c4_Storage s(fn_, 0);
+  if (!s.Strategy().IsValid())
+    return  - 1;
+
+  c4_View v = s.View("a");
+  c4_IntProp pi("i");
+  c4_StringProp ps("s");
+  c4_BytesProp pb("b");
+
+  if (rows_ != 0)
+    *rows_ = v.GetSize();
+
+  long h = v.GetSize();
+  for (int i = 0; i < v.GetSize(); ++i) {
+    h = h * 31 + pi(v[i]);
+    for (const char *q = ps(v[i]); *q; ++q)
+      h = h * 31 + *q;
+    c4_Bytes b;
+    pb(v[i]).GetData(b);
+    for (int k = 0; k < b.Size(); k += 97)
+      h = h * 31 + b.Contents()[k];
+    h += b.Size();
+  }
+  return h;
+}
+
+static long LiveSignature(c4_View v_) {
+  c4_IntProp pi("i");
+  c4_StringProp ps("s");
+  c4_BytesProp pb("b");
+
+  long h = v_.GetSize();
+  for (int i = 0; i < v_.GetSize(); ++i) {
+    h = h * 31 + pi(v_[i]);
+    for (const char *q = ps(v_[i]); *q; ++q)
+      h = h * 31 + *q;
+    c4_Bytes b;
+    pb(v_[i]).GetData(b);
+    for (int k = 0; k < b.Size(); k += 97)
+      h = h * 31 + b.Contents()[k];
+    h += b.Size();
+  }
+  return h;
+}
+
+static bool ReadFile(const char *fn_, c4_Bytes &data_) {
+  FILE *f = fopen(fn_, "rb");
+  if (f == 0)
+    return false;
+  fseek(f, 0, SEEK_END);
+  long n = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  t4_byte *p = data_.SetBuffer(n);
+  bool ok = (long)fread(p, 1, n, f) == n;
+  fclose(f);
+  return ok;
+}
+
+static t4_fpos Get32(const t4_byte *p_) {
+  return ((t4_fpos)p_[0] << 24) + (p_[1] << 16) + (p_[2] << 8) + p_[3];
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 1. The same commits must give the same results with either kind of marks
+
+static void TestParity(int mode_) {
+  printf("parity of standard and wide marks, mode %d\n", mode_);
+
+  const char *fnStd = "twide_std.mk";
+  const char *fnWide = "twide_wide.mk";
+  remove(fnStd);
+  remove(fnWide);
+
+  {
+    c4_Storage s1(fnStd, mode_);
+    c4_Storage s2(fnWide, mode_);
+    c4_View v1 = s1.GetAs("a[i:I,s:S,b:B]");
+    c4_View v2 = s2.GetAs("a[i:I,s:S,b:B]");
+
+    for (int round = 1; round <= 9; ++round) {
+      int kind = round % 3 == 0 ? 1: round % 4 == 0 ? 2: 0;
+
+      f4_WideAbove = kStdLimit;
+      Mutate(v1, round, kind);
+      CHECK(s1.Commit());
+
+      f4_WideAbove = 0; // all of these commits use wide marks
+      Mutate(v2, round, kind);
+      CHECK(s2.Commit());
+      f4_WideAbove = kStdLimit;
+
+      CHECK(LiveSignature(v1) == LiveSignature(v2));
+    }
+  }
+
+  f4_WideAbove = kStdLimit;
+  int rows1 = 0, rows2 = 0;
+  long sig1 = Signature(fnStd, &rows1);
+  long sig2 = Signature(fnWide, &rows2);
+  CHECK(sig1 != -1 && sig1 == sig2 && rows1 == rows2 && rows1 > 0);
+
+  // the wide file must have the wide marks at the end, and ...
+  c4_Bytes data;
+  CHECK(ReadFile(fnWide, data));
+  int n = data.Size();
+  const t4_byte *p = data.Contents();
+  CHECK(n > 24);
+  if (n > 24) {
+    const t4_byte *t = p + n - 24;
+    CHECK(t[0] == 0x82 && t[1] == 0 && t[2] == 0 && t[3] == 0);
+    CHECK(Get32(t + 4) == (t4_fpos)(n - 24)); // the skip tail points to itself
+    CHECK(t[8] == 0x83 && t[9] == 0 && t[10] == 0 && t[11] == 0);
+    CHECK(Get32(t + 12) == 0); // no bits beyond 32 here
+    CHECK(t[16] == 0x81 && t[17] == 0 && (t[18] != 0 || t[19] != 0));
+    CHECK(Get32(t + 20) > 0 && Get32(t + 20) < (t4_fpos)n);
+  }
+
+  // ... the standard file must have the same marks as ever
+  CHECK(ReadFile(fnStd, data));
+  n = data.Size();
+  p = data.Contents();
+  CHECK(n > 16);
+  if (n > 16) {
+    CHECK(p[n - 16] == 0x80 && p[n - 15] == 0 && p[n - 14] == 0 && p[n - 13] ==
+      0);
+    CHECK(Get32(p + n - 12) == (t4_fpos)(n - 16));
+    CHECK(p[n - 8] == 0x80 && Get32(p + n - 4) > 0);
+  }
+  // header of a wide file made in mode 1 is flagged as such, standard is not
+  if (mode_ == 1) {
+    CHECK(ReadFile(fnWide, data));
+    CHECK(data.Size() > 8 && (data.Contents()[3] &0xC0) == 0x40);
+    CHECK(ReadFile(fnStd, data));
+    CHECK(data.Size() > 8 && data.Contents()[3] == 0);
+  }
+
+  remove(fnStd);
+  remove(fnWide);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 2. A file may become wide at some point, and must stay readable
+
+static void TestTransition(int mode_) {
+  printf("file becoming wide, mode %d\n", mode_);
+
+  const char *fn = "twide_trans.mk";
+  remove(fn);
+
+  long expect = 0;
+  for (int round = 1; round <= 12; ++round) {
+    // narrow, then wide, then back to the default limit, which must not
+    // matter once the file has wide marks: it then has to stay that way
+    f4_WideAbove = round < 5 ? kStdLimit: round < 9 ? 0 : kStdLimit;
+
+    {
+      c4_Storage s(fn, mode_);
+      c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+      CHECK(LiveSignature(v) == expect || round == 1);
+      Mutate(v, round, round % 3 == 0 ? 1: round % 4 == 0 ? 2: 0);
+      CHECK(s.Commit());
+      expect = LiveSignature(v);
+    }
+
+    f4_WideAbove = kStdLimit;
+    CHECK(Signature(fn) == expect);
+
+    c4_Bytes data;
+    CHECK(ReadFile(fn, data));
+    const int n = data.Size();
+    if (n > 24) {
+      const bool wide = data.Contents()[n - 8] == 0x81;
+      CHECK(wide == (round >= 5)); // exactly from round 5 on
+      if (!wide)
+        CHECK(data.Contents()[n - 8] == 0x80);
+    }
+  }
+
+  remove(fn);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 3. Saving to a stream and loading it back, with wide marks
+
+class MemStream: public c4_Stream {
+  public:
+    t4_byte *_buf;
+    int _size, _cap, _pos;
+
+    MemStream(): _buf(0), _size(0), _cap(0), _pos(0){}
+    ~MemStream() {
+      free(_buf);
+    }
+
+    virtual int Read(void *p_, int n_) {
+      if (n_ > _size - _pos)
+        n_ = _size - _pos;
+      if (n_ > 0) {
+        memcpy(p_, _buf + _pos, n_);
+        _pos += n_;
+      }
+      return n_ > 0 ? n_ : 0;
+    }
+
+    virtual bool Write(const void *p_, int n_) {
+      if (_size + n_ > _cap) {
+        _cap = (_size + n_) * 2;
+        _buf = (t4_byte*)realloc(_buf, _cap);
+      }
+      memcpy(_buf + _size, p_, n_);
+      _size += n_;
+      return true;
+    }
+};
+
+static void TestStream() {
+  printf("stream with wide marks\n");
+
+  c4_Storage s;
+  c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+  Mutate(v, 1, 0);
+  Mutate(v, 2, 0);
+  const long expect = LiveSignature(v);
+
+  for (int wide = 0; wide < 2; ++wide) {
+    f4_WideAbove = wide ? 0 : kStdLimit;
+
+    MemStream out;
+    s.SaveTo(out);
+    f4_WideAbove = kStdLimit;
+    CHECK(out._size > 24);
+
+    const t4_byte *p = out._buf;
+    const int n = out._size;
+    CHECK(p[2] == 0x1A);
+    if (wide) {
+      CHECK((p[3] &0xC0) == 0x40); // flagged as a wide header ...
+      CHECK(n > 24 && p[n - 24] == 0x82 && p[n - 16] == 0x83 && p[n - 8] ==
+        0x81); // ... and has the wide tails
+    } else
+      CHECK(p[3] == 0 && p[n - 16] == 0x80 && p[n - 8] == 0x80);
+
+    // ... and the stream loads again, whichever kind it is
+    MemStream in;
+    in.Write(out._buf, out._size);
+    c4_Storage s2;
+    CHECK(s2.LoadFrom(in));
+    CHECK(LiveSignature(s2.View("a")) == expect);
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 4. Marks at positions beyond 4 Gb, using a file which is not really there
+
+class PretendFile: public c4_Strategy {
+  public:
+    struct Piece {
+        t4_fpos _pos;
+        t4_byte _data[24];
+        int _len;
+    };
+
+    Piece _pieces[8];
+    int _count;
+    t4_fpos _size;
+
+    PretendFile(): _count(0), _size(0){}
+
+    void Put(t4_fpos pos_, const t4_byte *p_, int n_) {
+      _pieces[_count]._pos = pos_;
+      memcpy(_pieces[_count]._data, p_, n_);
+      _pieces[_count]._len = n_;
+      ++_count;
+    }
+
+    virtual bool IsValid()const {
+      return true;
+    }
+
+    virtual t4_fpos FileSize() {
+      return _size;
+    }
+
+    virtual int DataRead(t4_fpos pos_, void *buf_, int len_) {
+      memset(buf_, 0, len_);
+      for (int i = 0; i < _count; ++i) {
+        const Piece &pc = _pieces[i];
+        for (int k = 0; k < len_; ++k)
+          if (pos_ + k >= pc._pos && pos_ + k < pc._pos + pc._len)
+            ((t4_byte*)buf_)[k] = pc._data[pos_ + k - pc._pos];
+      }
+      return len_;
+    }
+};
+
+static void Put32(t4_byte *p_, t4_fpos v_) {
+  p_[0] = (t4_byte)(v_ >> 24);
+  p_[1] = (t4_byte)(v_ >> 16);
+  p_[2] = (t4_byte)(v_ >> 8);
+  p_[3] = (t4_byte)v_;
+}
+
+// lay out a wide file, written out by hand from the description in marks.h
+static void WideImage(PretendFile &f_, t4_fpos skip_, t4_fpos root_, int len_,
+  t4_byte skipType_ = 0x82, t4_byte extType_ = 0x83, t4_byte commitType_ = 0x81)
+  {
+  t4_byte head[8] =  {
+    'J', 'L', 0x1A, 0x40, 0xFF, 0xFF, 0xFF, 0xFF
+  };
+  f_.Put(0, head, 8);
+
+  t4_byte tails[24];
+  memset(tails, 0, sizeof tails);
+
+  tails[0] = skipType_;
+  Put32(tails + 4, skip_ &0xFFFFFFFF);
+
+  tails[8] = extType_;
+  tails[9] = (t4_byte)(skip_ >> 48);
+  tails[10] = (t4_byte)(skip_ >> 40);
+  tails[11] = (t4_byte)(skip_ >> 32);
+  Put32(tails + 12, root_ >> 32);
+
+  tails[16] = commitType_;
+  tails[17] = (t4_byte)(len_ >> 16);
+  tails[18] = (t4_byte)(len_ >> 8);
+  tails[19] = (t4_byte)len_;
+  Put32(tails + 20, root_ &0xFFFFFFFF);
+
+  f_.Put(skip_, tails, 24);
+  f_._size = skip_ + 24;
+}
+
+static void TestBeyond4Gb() {
+  printf("marks beyond 4 Gb\n");
+
+  const t4_fpos big[] =  {
+    0x7fffffffLL + 100, // just over what standard marks can do
+    0xFFFFFFF0LL, // around 4 Gb, positions with a zero low part
+    0x100000000LL + 24, 0x1ABCDEF123LL, // 110 Gb
+    0x00AB00001234ABCDLL // 48 Pb, which also has bits in 48..55
+  };
+
+  for (int i = 0; i < (int)(sizeof big / sizeof *big); ++i) {
+    const t4_fpos skip = big[i];
+    const t4_fpos roots[] =  {
+      1234, 0x100000000LL, skip - 1000, 0x2FFFFFFFFLL, skip - 24
+    };
+    for (int j = 0; j < (int)(sizeof roots / sizeof *roots); ++j) {
+      PretendFile f;
+      WideImage(f, skip, roots[j], 0x123456);
+
+      t4_fpos end = f.EndOfData(f.FileSize());
+      CHECK(end == skip + 24);
+      CHECK(f._rootPos == roots[j]);
+      CHECK(f._rootLen == 0x123456);
+      CHECK(f._baseOffset == 0);
+    }
+  }
+
+  // damaged or confusing marks must be refused, not misread
+  const t4_fpos skip = 0x300000000LL + 4096;
+  const t4_fpos root = 0x280000000LL;
+  {
+    PretendFile f;
+    WideImage(f, skip, root, 100, 0x82, 0x84); // wrong extension
+    CHECK(f.EndOfData(f.FileSize()) < 0);
+  }
+  {
+    PretendFile f;
+    WideImage(f, skip, root, 100, 0x92); // wrong skip type
+    CHECK(f.EndOfData(f.FileSize()) < 0);
+  }
+  {
+    PretendFile f;
+    WideImage(f, skip, root, 0); // no root length
+    CHECK(f.EndOfData(f.FileSize()) < 0);
+  }
+  {
+    // the skip tail points to the wrong place, so there is no header there
+    PretendFile f;
+    WideImage(f, skip, root, 100);
+    f._pieces[1]._data[7] ^= 0x10;
+    CHECK(f.EndOfData(f.FileSize()) < 0);
+  }
+  {
+    // a header which is neither standard, old nor wide
+    PretendFile f;
+    WideImage(f, skip, root, 100);
+    f._pieces[0]._data[3] = 0xC0;
+    CHECK(f.EndOfData(f.FileSize()) < 0);
+  }
+  {
+    // a standard header does work with wide tails (extend mode files)
+    PretendFile f;
+    WideImage(f, skip, root, 100);
+    f._pieces[0]._data[3] = 0;
+    CHECK(f.EndOfData(f.FileSize()) == skip + 24);
+    CHECK(f._rootPos == root);
+  }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// 5. Interrupted commits, which must end up as the old or the new state
+
+class CrashStrategy: public c4_FileStrategy {
+  public:
+    int _budget, _writes;
+
+    CrashStrategy(int budget_): _budget(budget_), _writes(0){}
+
+    virtual void DataWrite(t4_fpos pos_, const void *buf_, int len_) {
+      ++_writes;
+      if (_budget-- > 0)
+        c4_FileStrategy::DataWrite(pos_, buf_, len_);
+    }
+
+    virtual void DataCommit(t4_fpos newSize_) {
+      if (_budget > 0)
+        c4_FileStrategy::DataCommit(newSize_);
+    }
+};
+
+// In the order in which they can happen as a commit progresses: the old
+// state, a file which cannot be read and looks empty, and the new state.
+// Anything else would mean that the file was damaged.
+enum {
+  kOld, kEmpty, kNew, kDamaged
+};
+
+static int Classify(const char *fn_, long before_, long after_) {
+  int rows = 0;
+  long sig = Signature(fn_, &rows);
+  if (sig == before_)
+    return kOld;
+  if (sig == after_)
+    return kNew;
+  return rows == 0 ? kEmpty: kDamaged;
+}
+
+static void TestCrash(bool wide_, int *outcomes_) {
+  const char *fn = "twide_crash.mk";
+
+  for (int mode = 1; mode <= 2; ++mode)
+  for (int seqlen = 1; seqlen <= 5; ++seqlen)
+  for (int kind = 0; kind < 3; ++kind) {
+    long before = 0, after = 0;
+    int w = 0, last = 0;
+
+    for (int n =  - 1;; ++n) {
+      remove(fn);
+      f4_WideAbove = wide_ ? 0 : kStdLimit;
+      {
+        c4_Storage s(fn, mode);
+        c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+        for (int r = 0; r < seqlen; ++r) {
+          Mutate(v, r + 1, r % 3 == 1 ? 1: 0);
+          s.Commit();
+        }
+      }
+      before = Signature(fn);
+      {
+        CrashStrategy cs(n < 0 ? 1000000: n);
+        cs.DataOpen(fn, 1);
+        c4_Storage s(cs, false, mode);
+        c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+        Mutate(v, seqlen + 1, kind);
+        s.Commit();
+        if (n < 0)
+          w = cs._writes;
+      }
+      f4_WideAbove = kStdLimit;
+
+      if (n < 0) {
+        after = Signature(fn);
+        continue;
+      }
+
+      const int c = Classify(fn, before, after);
+      ++outcomes_[c];
+      CHECK(c != kDamaged);
+      CHECK(c != kEmpty); // the last complete commit is found again
+      CHECK(c >= last || before == after); // never goes back in time
+      if (c > last && c != kDamaged)
+        last = c;
+      if (n == 0)
+        CHECK(c == kOld || before == after);
+      // The file ends with what remains of the interrupted commit (unless
+      // it got that far), and must accept further commits all the same.
+      if (n < w) {
+        f4_WideAbove = wide_ ? 0 : kStdLimit;
+        for (int k = 0; k < 3; ++k) {
+          long live = 0;
+          {
+            c4_Storage s(fn, mode);
+            c4_View v = s.GetAs("a[i:I,s:S,b:B]");
+            Mutate(v, 50 + k, k == 0 ? kind: k);
+            CHECK(s.Commit());
+            live = LiveSignature(v);
+          }
+          CHECK(Signature(fn) == live);
+        }
+        f4_WideAbove = kStdLimit;
+      }
+
+      if (n >= w)
+        break;
+    }
+
+    // and when it is not interrupted at all, the new state must be there
+    CHECK(Classify(fn, before, after) == kNew || before == after);
+  }
+  remove(fn);
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+int main() {
+  TestParity(1);
+  TestParity(2);
+  TestTransition(1);
+  TestTransition(2);
+  TestStream();
+  TestBeyond4Gb();
+
+  int std[4] =  {
+    0, 0, 0, 0
+  }, wide[4] =  {
+    0, 0, 0, 0
+  };
+  printf("interrupted commits, standard marks\n");
+  TestCrash(false, std);
+  printf("interrupted commits, wide marks\n");
+  TestCrash(true, wide);
+  printf("  outcomes (old/empty/new/damaged): standard %d/%d/%d/%d, wide "
+    "%d/%d/%d/%d\n", std[0], std[1], std[2], std[3], wide[0], wide[1], wide[2],
+    wide[3]);
+
+  CHECK(wide[kEmpty] == 0 && std[kEmpty] == 0);
+  CHECK(wide[kDamaged] == 0 && std[kDamaged] == 0);
+
+  printf("%d checks, %s\n", sChecks, sFailures == 0 ? "PASSED" : "FAILED");
+  return sFailures == 0 ? 0 : 1;
+}

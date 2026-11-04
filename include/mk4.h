@@ -830,6 +830,10 @@ class c4_Strategy {
     t4_fpos _rootPos;
     /// The size of the root column
     t4_i32 _rootLen;
+
+  private:
+    t4_fpos ScanMarks(t4_fpos end_, bool adjust_);
+    t4_fpos RecoverEnd(t4_fpos end_, bool adjust_);
 };
 
 //---------------------------------------------------------------------------

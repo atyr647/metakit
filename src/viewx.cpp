@@ -10,6 +10,7 @@
 #include "handler.h"
 #include "store.h"
 #include "column.h"
+#include "marks.h"
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -664,14 +665,99 @@ file marks is in one place within the loop.
 
 /// Scan datafile head/tail markers, return logical end of data
 t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
+  // if end was specified, then this strategy object gets adjusted as well
+  const bool adjust = end_ >= 0;
+  if (!adjust)
+    end_ = FileSize();
+
+  t4_fpos result = ScanMarks(end_, adjust);
+
+  // Not finding valid tails at the end does not mean there is no data: a
+  // commit which got interrupted leaves a file which does not end with them.
+  if (result < 0)
+    result = RecoverEnd(end_, adjust);
+
+  return result;
+}
+
+/*
+This is the fallback for a file which does not end with valid tails. The
+header records the size which the file had after the last commit, and each
+commit leaves a mark at the end of the commit before it saying how far the
+next one goes (this is what extend mode relies on, since it leaves the header
+alone). So start from the header, and follow these marks as long as the file
+has valid tails at the point to which they lead. This ends up at the last
+commit which was completed, at the point where it ends.
+
+Note that the file is longer than that, it contains the remains of the commit
+which did not make it. Writers must take that into account, see SaveIt.
+ */
+
+/// Find the last complete commit by means of the marks leading up to it
+t4_fpos c4_Strategy::RecoverEnd(t4_fpos end_, bool adjust_) {
+  t4_byte mark[8];
+  if (DataRead(0, mark, sizeof mark) != sizeof mark)
+    return  - 1;
+
+  // only if there is a header, of a new file (old ones have no such tails)
+  if ((mark[0] != 'J' && mark[0] != 'L') || (mark[0] ^ mark[1]) != ('J' ^
+    'L') || mark[2] != 0x1A || (mark[3] &0x80) != 0)
+    return  - 1;
+
+  // the offset in the header (see marks.h), if it was clipped it is no use
+  t4_fpos next = f4_Get32(mark + 4);
+  if (mark[3] &kHeadWide) {
+    next = f4_Join32(mark[3] &0x3F, next);
+    if (mark[3] == (kHeadWide | 0x3F) && f4_Get32(mark + 4) == 0xFFFFFFFF)
+      return  - 1;
+  }
+
+  const t4_fpos limit = end_ - _baseOffset;
+  t4_fpos best =  - 1;
+
+  // the number of steps is limited, in case of a loop in damaged marks
+  for (int steps = 0; steps < 10000000; ++steps) {
+    if (next < 24 || next > limit)
+      break;
+
+    // is there a commit which ends at this point?
+    if (ScanMarks(next + _baseOffset, false) < 0)
+      break;
+    best = next;
+
+    // the mark left by the next commit says where that would end
+    if (next + 8 > limit || DataRead(next, mark, sizeof mark) != sizeof mark)
+      break;
+    if ((mark[0] != 'J' && mark[0] != 'L') || (mark[0] ^ mark[1]) != ('J' ^
+      'L') || mark[2] != 0x0A || (mark[3] &0x80) != 0)
+      break;
+
+    t4_fpos step = f4_Get32(mark + 4);
+    if (mark[3] &kHeadWide) {
+      step = f4_Join32(mark[3] &0x3F, step);
+      if (mark[3] == (kHeadWide | 0x3F) && f4_Get32(mark + 4) == 0xFFFFFFFF)
+        break;
+    }
+    if (step <= 0)
+      break;
+    next += step;
+  }
+
+  return best < 0 ?  - 1: ScanMarks(best + _baseOffset, adjust_);
+}
+
+/// Scan backwards from the given end of the datafile
+t4_fpos c4_Strategy::ScanMarks(t4_fpos end_, bool adjust_) {
   enum {
-    kStateAtEnd, kStateCommit, kStateHead, kStateOld, kStateDone
+    kStateAtEnd, kStateCommit, kStateWideSkip, kStateHead, kStateOld,
+      kStateDone
   };
 
-  t4_fpos pos = (end_ >= 0 ? end_ : FileSize()) - _baseOffset;
+  t4_fpos pos = end_ - _baseOffset;
   t4_fpos last = pos;
   t4_fpos rootPos = 0;
   t4_i32 rootLen =  - 1; // impossible value, flags old-style header
+  t4_fpos skipHi = 0; // high bits of the wide skip tail, see marks.h
   t4_byte mark[8];
 
   for (int state = kStateAtEnd; state != kStateDone;) {
@@ -696,8 +782,21 @@ t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
     const bool isSkipTail = ((mark[0] & 0xF0) == 0x90 /* 2006-11-11 */ ||
                              mark[0] == 0x80 && count == 0) && offset > 0;
     const bool isCommitTail = mark[0] == 0x80 && count > 0 && offset > 0;
+    // the flag byte of a header is 00 for new files, 80 for old ones, and
+    // has bit 0x40 set for wide files (but never both 0x80 and 0x40)
     const bool isHeader = (mark[0] == 'J' || mark[0] == 'L') && (mark[0] ^
-      mark[1]) == ('J' ^ 'L') && mark[2] == 0x1A && (mark[3] & 0x40) == 0;
+      mark[1]) == ('J' ^ 'L') && mark[2] == 0x1A && (mark[3] & 0xC0) != 0xC0;
+
+    // a wide commit tail has an extension before it, which has the high bits
+    t4_byte ext[8];
+    bool isWideCommit = mark[0] == kMarkWideCommit && count > 0 && pos +
+      _baseOffset >= 16;
+    if (isWideCommit && state == kStateAtEnd) {
+      if (DataRead(pos - 8, ext, sizeof ext) != sizeof ext)
+        return  - 1;
+      isWideCommit = ext[0] == kMarkWideExt;
+    } else
+      isWideCommit = false;
       
     switch (state) {
       case kStateAtEnd:
@@ -712,6 +811,15 @@ t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
           rootLen = count;
           state = kStateCommit;
         }
+         else if (isWideCommit) {
+          rootPos = f4_Join32(f4_Get32(ext + 4), f4_Get32(mark + 4));
+          rootLen = count;
+          skipHi = (ext[1] << 16) + (ext[2] << 8) + ext[3];
+          if (rootPos <= 0)
+            return  - 1;
+          pos -= 8; // continue with the skip tail before the extension
+          state = kStateWideSkip;
+        }
          else {
           pos = 8;
           state = kStateOld;
@@ -725,6 +833,18 @@ t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
           return  - 1;
         pos -= offset - 8;
         state = kStateHead;
+        break;
+
+      case kStateWideSkip:
+        // like a commit tail, a wide one must be preceded by a skip tail
+
+        {
+          const t4_fpos skip = f4_Join32(skipHi, f4_Get32(mark + 4));
+          if (mark[0] != kMarkWideSkip || count != 0 || skip <= 0)
+            return  - 1;
+          pos -= skip - 8;
+          state = kStateHead;
+        }
         break;
 
       case kStateHead:
@@ -760,7 +880,7 @@ t4_fpos c4_Strategy::EndOfData(t4_fpos end_) {
 
   last += _baseOffset; // all seeks were relative to current offset
 
-  if (end_ >= 0)
+  if (adjust_)
    { // if end was specified, then adjust this strategy object
     _baseOffset += pos;
     d4_assert(_baseOffset >= 0);

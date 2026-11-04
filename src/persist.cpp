@@ -12,6 +12,11 @@
 #include "handler.h"
 #include "store.h"
 #include "field.h"
+#include "marks.h"
+
+// The datafile size above which wide marks are used, see marks.h.  The
+// default leaves room for the tails below the largest 31-bit position.
+t4_fpos f4_WideAbove = 0x7fffffff - 64;
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -25,13 +30,15 @@ class c4_FileMark {
 
   public:
     c4_FileMark();
-    c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_);
+    c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_, bool wide_ = false);
     c4_FileMark(t4_fpos pos_, int len_);
 
     t4_i32 Offset()const;
     t4_i32 OldOffset()const;
+    t4_fpos WideOffset()const;
 
     bool IsHeader()const;
+    bool IsWide()const;
     bool IsOldHeader()const;
     bool IsFlipped()const;
 };
@@ -42,26 +49,36 @@ c4_FileMark::c4_FileMark() {
   d4_assert(sizeof *this == 8);
 }
 
-c4_FileMark::c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_) {
+c4_FileMark::c4_FileMark(t4_fpos pos_, bool flipped_, bool extend_, bool 
+  wide_) {
   d4_assert(sizeof *this == 8);
   *(short*)_data = flipped_ ? kReverseFormat : kStorageFormat;
   _data[2] = extend_ ? 0x0A : 0x1A;
   _data[3] = 0;
-  t4_byte *p = _data + 4;
-  for (int i = 24; i >= 0; i -= 8)
-    *p++ = (t4_byte)(pos_ >> i);
-  d4_assert(p == _data + sizeof _data);
+
+  if (wide_) {
+    // 6 more bits of the offset go in the last bits of the flag byte, and
+    // anything beyond that is clipped, see marks.h
+    t4_fpos hi = f4_High32(pos_);
+    if (hi > 0x3F) {
+      hi = 0x3F;
+      pos_ = 0xFFFFFFFF;
+    }
+    _data[3] = (t4_byte)(kHeadWide | hi);
+  } else
+    d4_assert(pos_ >= 0 && pos_ <= 0x7fffffff);
+
+  f4_Put32(_data + 4, pos_);
 }
 
 c4_FileMark::c4_FileMark(t4_fpos pos_, int len_) {
   d4_assert(sizeof *this == 8);
   t4_byte *p = _data;
-  *p++ = 0x80;
+  *p++ = kMarkTail;
   for (int j = 16; j >= 0; j -= 8)
     *p++ = (t4_byte)(len_ >> j);
-  for (int i = 24; i >= 0; i -= 8)
-    *p++ = (t4_byte)(pos_ >> i);
-  d4_assert(p == _data + sizeof _data);
+  d4_assert(pos_ >= 0 && pos_ <= 0x7fffffff);
+  f4_Put32(p, pos_);
 }
 
 t4_i32 c4_FileMark::Offset()const {
@@ -78,6 +95,19 @@ t4_i32 c4_FileMark::OldOffset()const {
   return v;
 }
 
+// the offset of a wide header, or -1 if it was clipped (or this is no such)
+t4_fpos c4_FileMark::WideOffset()const {
+  if (!IsWide())
+    return  - 1;
+  const t4_fpos hi = _data[3] &0x3F;
+  const t4_fpos lo = f4_Get32(_data + 4);
+  return hi == 0x3F && lo == 0xFFFFFFFF ?  - 1: f4_Join32(hi, lo);
+}
+
+bool c4_FileMark::IsWide()const {
+  return (_data[3] &0xC0) == kHeadWide;
+}
+
 bool c4_FileMark::IsHeader()const {
   return (_data[0] == 'J' || _data[0] == 'L') && (_data[0] ^ _data[1]) == ('J'
     ^ 'L') && _data[2] == 0x1A;
@@ -90,6 +120,21 @@ bool c4_FileMark::IsOldHeader()const {
 bool c4_FileMark::IsFlipped()const {
   return *(short*)_data == kReverseFormat;
 
+}
+
+/////////////////////////////////////////////////////////////////////////////
+
+// write a skip tail at the given position, as a wide one if so requested,
+// which is followed by an extension so these are 16 bytes instead of 8
+static void WriteSkipTail(c4_Strategy &strategy_, t4_fpos pos_, bool wide_) {
+  if (wide_) {
+    t4_byte buf[16];
+    f4_WideSkipMarks(buf, pos_);
+    strategy_.DataWrite(pos_, buf, sizeof buf);
+  } else {
+    c4_FileMark mark(pos_, 0);
+    strategy_.DataWrite(pos_, &mark, sizeof mark);
+  }
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -635,6 +680,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     return ;
 
   const t4_fpos end = _fullScan ? 0 : size - _strategy._baseOffset;
+  int oldTails = kStdTailSize; // the size of the tails now at the end
 
   if (_differ == 0) {
     if (_mode != 1)
@@ -651,9 +697,25 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     _nextSpace->Occupy(1, 7);
 
     if (end > 0) {
-      d4_assert(end >= 16);
-      _space->Occupy(end - 16, 16);
-      _nextSpace->Occupy(end - 16, 16);
+      // The tails of the file as it is now are wide or standard ones, or
+      // there are none: after an interrupted commit, the file was opened
+      // by RecoverEnd and ends with the remains of that commit.  The tails
+      // which count are then somewhere inside, and nothing at the end may
+      // be taken for them.
+      t4_byte last[8];
+      oldTails = 0;
+      if (_strategy.DataRead(end - 8, last, sizeof last) == sizeof last) {
+        if (last[0] == kMarkWideCommit)
+          oldTails = kWideTailSize;
+        else if (last[0] == kMarkTail && (last[1] | last[2] | last[3]) != 0)
+          oldTails = kStdTailSize;
+      }
+
+      if (oldTails > 0) {
+        d4_assert(end >= oldTails);
+        _space->Occupy(end - oldTails, oldTails);
+        _nextSpace->Occupy(end - oldTails, oldTails);
+      }
       _space->Occupy(end, 8);
       _nextSpace->Occupy(end, 8);
     }
@@ -681,10 +743,12 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   t4_fpos limit = _nextSpace->AllocationLimit();
   d4_assert(limit >= 8 || _differ != 0 || _strategy._failure != 0);
 
-  // 2006-01-12 #2: catch file size exceeding 2 Gb, which is flagged either
-  // by the allocator running out of room or by the limit leaving the range
-  // in which the 8-byte file marks (and the arithmetic below) are safe
-  if (_strategy._failure != 0 || limit < 0 || limit > 0x7fffffff - 64) {
+  // 2006-01-12 #2: catch file size exceeding what the marks can express, which
+  // is flagged either by the allocator running out of room or by the limit
+  // leaving the range in which the file marks (and the arithmetic below) are
+  // safe.  The length of the root must fit in 24 bits, which is a limit too.
+  if (_strategy._failure != 0 || limit < 0 || limit > f4_kMaxWideEnd ||
+    (_differ == 0 && walk.ColSize() > 0xFFFFFF)) {
     if (_strategy._failure == 0)
       _strategy._failure =  - 1; // unusual non-zero value flags this case
     if (restorable)
@@ -725,27 +789,39 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 
   // this is the place where writing may start
 
+  // Files which grow too large for 31-bit positions get wide marks, and so
+  // do files which already have them.  The tails of such files take more
+  // space, but all the logic is the same, except for in-place commits.
+#if q4_FPOS64
+  const bool wide = oldTails == kWideTailSize || limit > f4_WideAbove;
+#else 
+  const bool wide = false;
+#endif 
+  const int tails = wide ? kWideTailSize : kStdTailSize;
+
   // figure out where the new file ends and write a skip tail there
   t4_fpos end0 = end;
 
-  // true if the file need not be extended due to internal free space
-  bool inPlace = end0 == limit - 8;
+  // True if the file need not be extended due to internal free space.  This
+  // overwrites the commit tail, which can only be done safely in a single
+  // write of 8 bytes, so wide files do not do this, they always append.
+  bool inPlace = !wide && oldTails == kStdTailSize && end0 == limit - 8;
   if (inPlace) {
     d4_assert(!_fullScan);
     _space->Release(end0, 8);
     _nextSpace->Release(end0, 8);
-    end0 -= 16; // overwrite existing tail markers
+    end0 -= kStdTailSize; // overwrite existing tail markers
   } else {
     /* 18-11-2005 write new end marker and flush it before *anything* else! */
     if (!_fullScan && end0 < limit) {
-      c4_FileMark mark1(limit, 0);
-      _strategy.DataWrite(limit, &mark1, sizeof mark1);
+      WriteSkipTail(_strategy, limit, wide);
       _strategy.DataCommit(0);
       if (_strategy._failure != 0)
         return ;
     }
 
-    c4_FileMark head(limit + 16-end, _strategy._bytesFlipped, end > 0);
+    c4_FileMark head(limit + tails - end, _strategy._bytesFlipped, end > 0,
+      wide);
     _strategy.DataWrite(end, &head, sizeof head);
 
     if (end0 < limit)
@@ -753,12 +829,12 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     // create a gap
   }
 
-  t4_fpos end1 = end0 + 8;
+  // end1 is where the commit tail goes, which is the last 8 bytes
+  t4_fpos end1 = end0 + tails - 8;
   t4_fpos end2 = end1 + 8;
 
   if (!_fullScan && !inPlace) {
-    c4_FileMark mark1(end0, 0);
-    _strategy.DataWrite(end0, &mark1, sizeof mark1);
+    WriteSkipTail(_strategy, end0, wide);
 #if q4_WIN32
     /* March 8, 2002
      * On at least NT4 with NTFS, extending a file can cause it to be
@@ -769,18 +845,17 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
      */
     t4_fpos realend = _strategy.FileSize() - _strategy._baseOffset;
     if (realend > end1) {
-      end0 = limit = realend - 8;
+      end0 = limit = realend - (end1 - end0);
       end1 = realend;
       end2 = realend + 8;
-      c4_FileMark mark1a(end0, 0);
-      _strategy.DataWrite(end0, &mark1a, sizeof mark1a);
+      WriteSkipTail(_strategy, end0, wide);
     }
 #endif 
     d4_assert(_strategy.FileSize() == _strategy._baseOffset + end1);
   }
 
-  _space->Occupy(end0, 16);
-  _nextSpace->Occupy(end0, 16);
+  _space->Occupy(end0, tails);
+  _nextSpace->Occupy(end0, tails);
 
   // strategy.DataCommit(0); // may be needed, need more info on how FS's work
   // but this would need more work, since we can't adjust file-mapping here
@@ -793,13 +868,23 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   d4_assert(_nextPosIndex == _newPositions.GetSize());
 
   if (_fullScan) {
-    c4_FileMark mark1(limit, 0);
-    _strategy.DataWrite(_strategy.FileSize() - _strategy._baseOffset,  &mark1,
-      sizeof mark1);
+    if (wide) {
+      // written in one go, since streams only allow sequential writing
+      t4_byte buf[kWideTailSize];
+      f4_WideSkipMarks(buf, limit);
+      f4_WideCommitMarks(buf + 8, limit, limit - walk.ColSize(), walk.ColSize
+        ());
+      _strategy.DataWrite(_strategy.FileSize() - _strategy._baseOffset, buf,
+        sizeof buf);
+    } else {
+      c4_FileMark mark1(limit, 0);
+      _strategy.DataWrite(_strategy.FileSize() - _strategy._baseOffset,  &mark1,
+        sizeof mark1);
 
-    c4_FileMark mark2(limit - walk.ColSize(), walk.ColSize());
-    _strategy.DataWrite(_strategy.FileSize() - _strategy._baseOffset,  &mark2,
-      sizeof mark2);
+      c4_FileMark mark2(limit - walk.ColSize(), walk.ColSize());
+      _strategy.DataWrite(_strategy.FileSize() - _strategy._baseOffset,  &mark2,
+        sizeof mark2);
+    }
 
     return ;
   }
@@ -808,7 +893,7 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     d4_assert(_strategy.FileSize() == _strategy._baseOffset + end2);
   else {
     // make sure the allocated size hasn't changed
-    d4_assert(_nextSpace->AllocationLimit() == limit + 16);
+    d4_assert(_nextSpace->AllocationLimit() == limit + tails);
     d4_assert(end0 >= limit);
     d4_assert(_strategy.FileSize() - _strategy._baseOffset == end1);
   }
@@ -818,20 +903,27 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 
   _strategy.DataCommit(0);
 
-  c4_FileMark mark2(walk.Position(), walk.ColSize());
-  _strategy.DataWrite(end1, &mark2, sizeof mark2);
+  if (wide) {
+    // the extension is rewritten as well, now that the root is known
+    t4_byte buf[16];
+    f4_WideCommitMarks(buf, end0, walk.Position(), walk.ColSize());
+    _strategy.DataWrite(end1 - 8, buf, sizeof buf);
+  } else {
+    c4_FileMark mark2(walk.Position(), walk.ColSize());
+    _strategy.DataWrite(end1, &mark2, sizeof mark2);
+  }
   d4_assert(_strategy.FileSize() - _strategy._baseOffset == end2);
 
   // do not alter the file header in extend mode, unless it is new
   if (!_fullScan && (_mode == 1 || end == 0)) {
     _strategy.DataCommit(0);
 
-    c4_FileMark head(end2, _strategy._bytesFlipped, false);
+    c4_FileMark head(end2, _strategy._bytesFlipped, false, wide);
     d4_assert(head.IsHeader());
     _strategy.DataWrite(0, &head, sizeof head);
 
     // if the file became smaller, we could shrink it
-    if (limit + 16 < end0) {
+    if (limit + tails < end0) {
       /*
       Not yet, this depends on the strategy class being able to truncate, but
       there is no way to find out whether it does (the solution is to write tail
@@ -1188,7 +1280,10 @@ c4_HandlerSeq *c4_Persist::Load(c4_Stream *stream_) {
   //_oldStyle = head._data[3] == 0x80;
   d4_assert(!head.IsOldHeader());
 
-  t4_fpos limit = head.Offset();
+  // the data is loaded into memory, which also limits the size it can have
+  t4_fpos limit = head.IsWide() ? head.WideOffset(): head.Offset();
+  if (limit < 0 || limit > 0x7fffffff)
+    return 0;
 
   c4_StreamStrategy *strat = d4_new c4_StreamStrategy(limit);
   strat->_bytesFlipped = head.IsFlipped();
