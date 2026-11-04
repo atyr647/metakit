@@ -55,8 +55,12 @@
     petabytes, streams, and crashes after every single write.  "make
     test-large" runs tests/tlarge.cpp, which builds a datafile of over
     4 Gb, and checks mapping, allocation, commit and recovery on it.  This
-    needs several GB of free disk and memory.  Windows builds have not been
-    tried, nor builds without 64-bit integers, which keep the 2 Gb limit.
+    needs several GB of free disk and memory.  tests/cross-windows.sh builds
+    all this with mingw-w64 and runs it under Wine: the regression tests,
+    twide, and tlarge on a datafile of 4.3 GB (mapped, 64-bit) and 4.8 GB
+    (32-bit, where it cannot be mapped) were all successful.  Not tried: the
+    Microsoft compiler (which gets _fseeki64) and builds without 64-bit
+    integers, which keep the 2 Gb limit.
 
 2011-08-18    Move code to public repository on GitHub
 

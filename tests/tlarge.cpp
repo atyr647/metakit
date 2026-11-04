@@ -26,10 +26,12 @@
 //     what was committed before it, nor what is committed after it
 //   - everything that was committed successfully can be read back unchanged
 //
-// Usage: tlarge <file> [rows] [megabytes-per-row] [--expect-all] [--unmapped]
+// Usage: tlarge <file> [rows] [megabytes-per-row] [flags]
 //   --expect-all  also demand that every commit succeeds (needs 64-bit
 //                 file positions) and runs the steps after the first one
 //   --unmapped    expect that the library is built without file mapping
+//   --ints=<n>    use n million integers in step 5 (default 150), which a
+//                 32-bit process needs to keep below some 100
 
 #include "mk4.h"
 #include "mk4io.h"
@@ -41,6 +43,7 @@ typedef long long i64;
 
 static int sFailures = 0;
 static bool sExpectMapped = true;
+static int sMillionInts = 150;
 
 #define CHECK(c) do { if (!(c)) { \
     fprintf(stderr, "CHECK FAILED line %d: %s\n", __LINE__, #c); \
@@ -102,6 +105,24 @@ static bool VerifyRow(const c4_View &v_, const c4_BytesProp &p_, int index_,
 
 // reopen read-only and check that the rows are all there
 static void VerifyFile(const char *fn_, const Row *rows_, int n_, bool full_) {
+  // A column which has been accessed stays in memory until the storage is
+  // closed, if the file cannot be mapped.  A process which cannot hold all
+  // the rows at once then looks at one row in each session.
+  if (sizeof(void*) < 8) {
+    for (int i = 0; i < n_; ++i) {
+      c4_Storage s(fn_, 0);
+      c4_View v = s.View("a");
+      c4_BytesProp p("p");
+      CHECK(v.GetSize() == n_);
+      if (v.GetSize() == n_)
+        CHECK(VerifyRow(v, p, i, rows_[i], full_));
+    }
+    c4_Storage s(fn_, 0);
+    printf("  reopened row by row: %d rows, %lld bytes\n", n_,
+      (i64)s.Strategy().FileSize());
+    return ;
+  }
+
   c4_Storage s(fn_, 0);
   c4_View v = s.View("a");
   c4_BytesProp p("p");
@@ -152,9 +173,19 @@ int main(int argc, char **argv) {
   const char *fn = argc > 1 ? argv[1] : "tlarge.mk";
   int rows = argc > 2 ? atoi(argv[2]) : 6;
   i64 len = (argc > 3 ? atoi(argv[3]) : 512) * (i64)(1 << 20);
-  bool expectAll = argc > 4 && strcmp(argv[4], "--expect-all") == 0;
-  if (argc > 5 && strcmp(argv[5], "--unmapped") == 0)
-    sExpectMapped = false;
+  bool expectAll = false;
+  for (int a = 4; a < argc; ++a) {
+    if (strcmp(argv[a], "--expect-all") == 0)
+      expectAll = true;
+    else if (strcmp(argv[a], "--unmapped") == 0)
+      sExpectMapped = false;
+    else if (strncmp(argv[a], "--ints=", 7) == 0)
+      sMillionInts = atoi(argv[a] + 7);
+    else {
+      fprintf(stderr, "unknown flag %s\n", argv[a]);
+      return 2;
+    }
+  }
 
   remove(fn);
 
@@ -315,9 +346,9 @@ int main(int argc, char **argv) {
   printf("final check of everything\n");
   VerifyFile(fn, sRows, sCount, true);
 
-  printf("5. a column of 1.2 GB of integers\n");
+  printf("5. a column of %d million integers\n", sMillionInts);
   {
-    const int n = 150000000;
+    const int n = sMillionInts * 1000000;
     const char *fn2 = "tlarge_ints.mk";
     remove(fn2);
     c4_LongProp pl("l");
