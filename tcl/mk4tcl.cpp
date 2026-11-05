@@ -2642,6 +2642,12 @@ static int Mktcl_Cmds(Tcl_Interp *interp, bool /*safe*/) {
 // but 8.0.2 load guesses module "mk" instead of "mk4tcl" (it stops at digits)
 // when the third argument is omitted, allow that too: "load mk4tcl.{so,dll}".
 
+// Explicit C linkage: Tcl calls these by name.  tcl.h's EXTERN is meant to give it, but a build which compiles this file inside a larger one (KitCreator, for a
+// statically linked tclkit) ended up with C++ names (_Z11Mk4tcl_InitP10Tcl_Interp), which the C code of the kit cannot call.
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 EXTERN int Mk4tcl_Init(Tcl_Interp *interp) {
   return Mktcl_Cmds(interp, false);
 }
@@ -2657,6 +2663,10 @@ EXTERN int Mk4tcl_SafeInit(Tcl_Interp *interp) {
 EXTERN int Mk_SafeInit(Tcl_Interp *interp) {
   return Mktcl_Cmds(interp, true);
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 ///////////////////////////////////////////////////////////////////////////////
 
