@@ -141,6 +141,11 @@ install-doc: doc
 test: binaries libraries
 	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` $(TESTFLAGS)
 
+# Tests which need several Gb of memory and disk (constraint largeData).
+test-large: binaries libraries
+	$(TCLSH) `@CYGPATH@ $(srcdir)/tests/all.tcl` -file wide.test \
+	  -constraints largeData $(TESTFLAGS)
+
 shell: binaries libraries
 	@$(TCLSH) $(SCRIPT)
 
@@ -276,6 +281,6 @@ uninstall-binaries:
 	  rm -f $(DESTDIR)$(bindir)/$$p; \
 	done
 
-.PHONY: all binaries clean depend distclean doc install libraries test
+.PHONY: all binaries clean depend distclean doc install libraries test test-large
 
 .NOEXPORT:

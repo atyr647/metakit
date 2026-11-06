@@ -356,7 +356,13 @@ static int mkOutput(ClientData instanceData, const char *buf, int toWrite, int
   if (chan->_failure == 0)
     return toWrite;
 
-  *errorCodePtr = EINVAL; // hm, bad choice of error code
+  // a memo cannot grow beyond the limit for a column (2 Gb), which is the
+  // only reason for a write to fail: "file too large" says so
+#ifdef EFBIG
+  *errorCodePtr = EFBIG;
+#else 
+  *errorCodePtr = EINVAL;
+#endif 
   return  - 1;
 }
 
@@ -1885,7 +1891,22 @@ int MkTcl::FileCmd() {
 
     case 2:
        { // close
+        // A datafile opened without -nocommit is committed when it is
+        // closed.  That used to happen when the storage went away, which
+        // cannot report anything, so a commit which failed (after a size
+        // error, say, or with a full disk) lost every change made since the
+        // last commit without a word.  It is done here, and a failure is an
+        // error, after the datafile has been closed all the same.
+        bool committed = true;
+        if (np->_storage.Strategy().IsValid() && np->_storage.AutoCommit
+          (false)) {
+          np->ForceRefresh(); // detach first
+          committed = np->_storage.Commit(false);
+        }
         delete np;
+        if (!committed)
+          return Fail("commit failed while closing the datafile: the changes"
+            " made since the last commit are lost");
       }
       break;
 

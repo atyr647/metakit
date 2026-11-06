@@ -110,5 +110,47 @@ test 5 {a column which would be too large is an error, not the end} -body {
   set r
 } -cleanup {catch {mk::file close db}; file delete $f} -result {2 5 6}
 
+# A memo cannot grow beyond the limit for a column either.  Through mk::channel
+# a write which would go beyond it fails, with "file too large" (it was
+# "invalid argument"), and what was written before is kept: the program has
+# to decide what to do with it.  This needs over 2 Gb of memory and disk, and
+# runs with "make test-large" (constraint largeData).
+test 6 {writing a memo beyond 2 Gb through a channel} -constraints largeData -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {name:S m:B}
+  mk::row append db.a name big
+
+  set fd [mk::channel db.a!0 m w]
+  fconfigure $fd -translation binary
+  set chunk [string repeat abcdefgh [expr {8 << 20}]]
+  set n 0
+  set r [catch {
+    while {$n < 40} {
+      puts -nonewline $fd $chunk
+      flush $fd
+      incr n
+    }
+  } msg]
+  catch {close $fd}
+  lappend r $msg [expr {$n * [string length $chunk] < 0x80000000}]
+
+  # what was written is all there, in whole buffers of the channel
+  set size [mk::get db.a!0 -size m]
+  lappend r [expr {$size > 0x7fffffff - 65536 && $size <= 0x7fffffff}]
+  mk::file commit db
+  mk::file close db
+
+  mk::file open db $f -readonly
+  lappend r [expr {[mk::get db.a!0 -size m] == $size}]
+  set fd [mk::channel db.a!0 m]
+  fconfigure $fd -translation binary
+  seek $fd -8 end
+  lappend r [read $fd]
+  close $fd
+  set r
+} -cleanup {catch {mk::file close db}; file delete $f} -match glob -result {1 {error writing "*": file too large} 1 1 1 abcdefgh}
+
 file delete $f
 cleanupTests

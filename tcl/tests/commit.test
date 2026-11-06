@@ -253,4 +253,50 @@ test 5 {missing/empty file} -body {
 }
 file delete $f
 
+# Closing a datafile commits it (unless it was opened with -nocommit).  If
+# that commit failed, all changes since the last commit were lost and nothing
+# said so: mk4vfs closes a starkit like this when it is unmounted, and after a
+# size error the unmount seemed to succeed but the kit was empty.  A size
+# error is used here to make the commit fail, see wide.test.
+set f f6.dat
+test 6 {a commit which fails when closing is an error} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a s:S
+  mk::view layout db.c l:L
+  mk::row append db.a s one
+  mk::file commit db
+
+  mk::row append db.a s two
+  assert [catch {mk::view size db.c 268435456}]
+  set r [catch {mk::file close db} msg]
+  lappend r $msg
+
+  # the datafile is closed all the same, and has what was committed
+  lappend r [lsearch [mk::file open] db]
+  mk::file open db $f -readonly
+  lappend r [mk::view size db.a] [mk::get db.a!0 s]
+} -cleanup {catch {mk::file close db}} -result {1 {commit failed while closing the datafile: the changes made since the last commit are lost} -1 1 one}
+file delete $f
+
+test 7 {closing commits, except with -nocommit} -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a s:S
+  mk::row append db.a s one
+  set r [mk::file close db]
+
+  mk::file open db $f -nocommit
+  mk::view layout db.c l:L
+  mk::row append db.a s two
+  assert [catch {mk::view size db.c 268435456}]
+  lappend r [mk::file close db]
+
+  mk::file open db $f -readonly
+  lappend r [mk::view size db.a] [mk::get db.a!0 s] [mk::file close db]
+} -cleanup {catch {mk::file close db}} -result {db db 1 one db}
+file delete $f
+
 ::tcltest::cleanupTests

@@ -1,3 +1,52 @@
+2026-11-06    Mk4tcl: errors which were lost when writing a starkit
+
+    mk4vfs (the starkit file system of tclvfs, not part of Metakit) lost
+    data without a word in two ways, found when writing files of a few
+    hundred Mb or more into a kit:
+
+    - Closing a datafile commits it, unless it was opened with -nocommit.
+      That commit was done when the storage went away, which cannot report
+      anything, so "mk::file close" succeeded when the commit failed, and
+      all changes made since the last commit were lost.  mk4vfs keeps new
+      contents in the column of their directory until a commit, and this
+      happened when they went beyond 2 Gb: the mk::set which got the size
+      error is done by tclvfs in a close callback, whose errors it drops,
+      the unmount seemed to succeed and the kit was left empty (116 bytes).
+      "mk::file close" now commits first, and if that fails it closes the
+      datafile all the same and returns an error:  "commit failed while
+      closing the datafile: the changes made since the last commit are lost".
+
+    - A write through mk::channel which would make a memo larger than the
+      limit for a column fails, as before, but with "file too large" (EFBIG)
+      instead of "invalid argument".  What was written before is still kept,
+      which mk4vfs then committed as if the file were complete: Mk4tcl cannot
+      know that the program does not want it, mk4vfs has to leave it out.
+
+    Bug fixed: reading a memo of nearly 2 Gb (through mk::channel, or any
+    c4_BytesRef::Access near its end) read beyond the memo and crashed,
+    because offset and length were added in 32 bits.
+
+    Tests: tcl/tests/commit.test makes the commit fail with a size error and
+    checks that closing reports it, and that the datafile has what was
+    committed before.  tcl/tests/wide.test writes a memo past 2 Gb through
+    mk::channel, commits it and reads its end (this needs over 2 Gb of memory
+    and of disk, and runs with "make test-large" in the Tcl build directory).
+
+    Not fixed: a column of more than 2^31 - 4096 bytes (2 Gb less 4 Kb) can
+    make the program crash, in c4_Column, whose positions include the gap of
+    a column which is being changed and are 32-bit: writing exactly 2^31 - 1
+    bytes into a memo through mk::channel ends in a segmentation fault in
+    c4_ColIter::Next.  Writes of whole buffers of 4 Kb, as Tcl channels do,
+    stop just before that.  The limit for a column should take this into
+    account, or the positions be made wider; neither was done here.
+
+    Not in Metakit: mk4vfs itself has to leave out a file which it could not
+    store completely, refuse a file of 2 Gb or more before Tcl aborts with
+    "max size for a Tcl value exceeded" (compressed files are collected in
+    one Tcl value), and store contents in a way which does not depend on the
+    size of the directory between commits (through mk::channel, which writes
+    into a memo of its own, instead of mk::set).
+
 2026-11-06    Mk4tcl memory-maps datafiles again (TEA build)
 
     The TEA build of Mk4tcl (tcl/configure) never used mmap: its config.h

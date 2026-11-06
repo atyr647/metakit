@@ -198,7 +198,9 @@ Show a list of all people with first name 'John':
 <P>
     The '<B>mk::file close</B>' command closes the datafile and releases
     all associated resources.  If not opened with <I>-readonly</I> or <I>-nocommit</I>,
-    all pending changes will be saved to file before closing it.  A <I>tag</I>
+    all pending changes will be saved to file before closing it.  If that
+    commit fails, the datafile is closed all the same (without the changes
+    made since the last commit) and the command returns an error.  A <I>tag</I>
     loses its special meaning after the corresponding datafile has been closed.
 <P>
     The '<B>mk::file commit</B>' command flushes all pending changes to disk.
@@ -616,6 +618,10 @@ Note that you cannot easily use a loop to insert or delete rows, since changes t
     Note: do not insert or delete rows in a view within which there are
     open channels, because subsequent reads and writes may end up going
     to the wrong memo property.
+<P>
+    A memo cannot hold 2 Gb or more (the limit is a little less than 2^31
+    bytes).  A write which would make it larger fails with "file too large",
+    and what was written before it is kept.
 <P>
 <DT>EXAMPLES<DD>
     Write a few values (with line separators):

@@ -516,7 +516,8 @@ c4_Bytes c4_BytesRef::Access(t4_i32 off_, int len_, bool noCopy_)const {
   if (colNum >= 0) {
     c4_Handler &h = _cursor._seq->NthHandler(colNum);
     int sz = h.ItemSize(_cursor._index);
-    if (len_ == 0 || off_ + len_ > sz)
+    // (not off_ + len_ > sz, which overflows for a memo of nearly 2 Gb)
+    if (len_ == 0 || len_ > sz - off_)
       len_ = sz - off_;
 
     if (len_ > 0) {
