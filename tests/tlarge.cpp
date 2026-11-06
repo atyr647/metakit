@@ -20,6 +20,13 @@
 //   5. Commit a column of integers which is far beyond 256 Mb (it used to
 //      overflow an int calculation there), which is as large as one column
 //      is allowed to get.  Persisted values are read back and checked.
+//   6. Memos and a column of integers at the limit for a column (2^31 - 1
+//      bytes) and around 2^31 - 4096: positions in a column include its gap,
+//      which made them go beyond 31 bits there, and the program crashed.
+//      They are made in one piece and in small pieces, committed, reopened,
+//      changed at the limit, and what goes beyond it has to be refused.
+//      This needs a 64-bit process, some 8 Gb of memory (of which the mapped
+//      datafile is a part) and 4.3 Gb of disk.
 //
 // Whatever the engine can or cannot do, the following must always hold:
 //   - a commit either succeeds or fails, a failed commit must never damage
@@ -32,6 +39,7 @@
 //   --unmapped    expect that the library is built without file mapping
 //   --ints=<n>    use n million integers in step 5 (default 150), which a
 //                 32-bit process needs to keep below some 100
+//   --limit-only  only run step 6 (the rows and megabytes are not used)
 
 #include "mk4.h"
 #include "mk4io.h"
@@ -169,6 +177,166 @@ static void AddRow(c4_View &v_, const c4_BytesProp &p_, t4_byte *buf_, int id_,
   ++sCount;
 }
 
+// The limit for a column, and the sizes around 2^31 - 4096 at which a memo
+// used to crash the program (2^31 - 4096 itself did not, one more did).
+static const i64 kLimit = 0x7fffffff;
+static const i64 kSizes[] =  {
+  kLimit - 4096, kLimit - 4095, kLimit - 4094, kLimit
+};
+
+// a memo made by writing it in pieces, as a Tcl channel does (4 Kb)
+static bool AppendMemo(c4_View &v_, const c4_BytesProp &p_, const t4_byte
+  *data_, i64 len_, int piece_) {
+  for (i64 off = 0; off < len_; off += piece_) {
+    int n = len_ - off < piece_ ? (int)(len_ - off): piece_;
+    if (!p_(v_[0]).Modify(c4_Bytes(data_ + off, n, false), (t4_i32)off))
+      return false;
+  }
+  return true;
+}
+
+// what goes beyond the limit is refused, and the memo stays as it is
+static void CheckRefused(c4_View &v_, const c4_BytesProp &p_, const Row &row_)
+  {
+  const t4_byte one = 'x';
+  const i64 room = kLimit - row_._len;
+  static t4_byte more[8192];
+  CHECK(!p_(v_[0]).Modify(c4_Bytes(more, (int)room + 1), (t4_i32)row_._len));
+  CHECK(!p_(v_[0]).Modify(c4_Bytes(more, (int)room + 1), 12345, (int)room + 1));
+  if (room == 0) {
+    CHECK(!p_(v_[0]).Modify(c4_Bytes(&one, 1), (t4_i32)row_._len));
+    CHECK(!p_(v_[0]).Modify(c4_Bytes(&one, 1), 0, 1));
+  }
+  CHECK((i64)p_(v_[0]).GetSize() == row_._len);
+  CHECK(VerifyRow(v_, p_, 0, row_, false));
+}
+
+static void TestColumnLimit(const char *fn_) {
+  printf("6. memos and a column of integers at the limit for a column\n");
+  if (sizeof(void*) < 8) {
+    printf("  (skipped, this needs a 64-bit process)\n");
+    return ;
+  }
+
+  t4_byte *data = (t4_byte*)malloc((size_t)kLimit);
+  CHECK(data != 0);
+  if (data == 0)
+    return ;
+  Fill(data, 7, kLimit); // every memo here is a part of this
+  c4_BytesProp p("p");
+
+  for (int k = 0; k < (int)(sizeof kSizes / sizeof *kSizes); ++k) {
+    Row row;
+    row._id = 7;
+    row._len = kSizes[k];
+    printf("  memo of %lld bytes (2^31 - %lld)\n", row._len, kLimit + 1 -
+      row._len);
+
+    // in pieces, the way a channel writes, in a storage without a file
+    {
+      c4_Storage s;
+      c4_View v = s.GetAs("a[p:B]");
+      v.SetSize(1);
+      CHECK(AppendMemo(v, p, data, row._len, 4096));
+      CHECK((i64)p(v[0]).GetSize() == row._len);
+      CHECK(VerifyRow(v, p, 0, row, false));
+      CheckRefused(v, p, row);
+    }
+
+    // in one piece, committed and read back
+    remove(fn_);
+    {
+      c4_Storage s(fn_, 1);
+      c4_View v = s.GetAs("a[p:B]");
+      v.SetSize(1);
+      p(v[0]).SetData(c4_Bytes(data, (int)row._len, false));
+      CHECK((i64)p(v[0]).GetSize() == row._len);
+      CheckRefused(v, p, row);
+      CHECK(s.Commit());
+    }
+    VerifyFile(fn_, &row, 1, false);
+
+    // changed where it is mapped (out, and back in, the middle), filled up to
+    // the limit, and what is too much is refused, then committed again
+    {
+      c4_Storage s(fn_, 1);
+      c4_View v = s.View("a");
+      const int hole = 10000, at = 5000;
+      CHECK(p(v[0]).Modify(c4_Bytes(), at, - hole));
+      CHECK((i64)p(v[0]).GetSize() == row._len - hole);
+      CHECK(p(v[0]).Modify(c4_Bytes(data + at, hole, false), at, hole));
+      CHECK(VerifyRow(v, p, 0, row, false));
+
+      // (the end of the data is in the gap now, which has to stay below it)
+      CHECK(p(v[0]).Modify(c4_Bytes(), (t4_i32)(row._len - 3000), - 2000));
+      CHECK(p(v[0]).Modify(c4_Bytes(data + row._len - 3000, 2000, false),
+        (t4_i32)(row._len - 3000), 2000));
+      CHECK(VerifyRow(v, p, 0, row, false));
+
+      const i64 room = kLimit - row._len;
+      if (room > 0) {
+        CHECK(p(v[0]).Modify(c4_Bytes(data + row._len, (int)room, false),
+          (t4_i32)row._len));
+        row._len = kLimit;
+      }
+      CheckRefused(v, p, row);
+      CHECK(s.Commit());
+    }
+    VerifyFile(fn_, &row, 1, false);
+    remove(fn_);
+  }
+  free(data);
+
+#if q4_EXCEPTIONS
+  // a column of 2^28 - 1 longs is 8 bytes less than the limit, and one more
+  // is a size error, from which a rollback recovers
+  {
+    printf("  2^28 - 1 longs, and one more\n");
+    const int n = (1 << 28) - 1;
+    c4_LongProp pl("l");
+    {
+      c4_Storage s(fn_, 1);
+      c4_View v = s.GetAs("b[l:L]");
+      v.SetSize(n);
+      for (int i = 0; i < n; ++i)
+        pl(v[i]) = ((t4_i64)i << 33) + 5;
+      CHECK(s.Commit());
+
+      bool caught = false;
+      try {
+        v.Add(pl[1]);
+      } catch (const c4_SizeError &e) {
+        caught = true;
+        CHECK(e._wanted == kLimit + 1 && e._limit == kLimit);
+      }
+      CHECK(caught);
+      CHECK(v.GetSize() == n);
+      CHECK(!s.Commit());
+      CHECK(s.Rollback());
+
+      // and then it can be changed and committed as before
+      v = s.View("b");
+      CHECK(v.GetSize() == n);
+      v.RemoveAt(0);
+      v.Add(pl[(t4_i64)n << 33]);
+      CHECK(s.Commit());
+    }
+    c4_Storage s(fn_, 0);
+    c4_View v = s.View("b");
+    CHECK(v.GetSize() == n);
+    int bad = 0;
+    for (int i = 0; i < n - 1 && i < v.GetSize(); i += (i < 100000 ? 1 : 997))
+      if ((t4_i64)pl(v[i]) != ((t4_i64)(i + 1) << 33) + 5)
+        ++bad;
+    CHECK(bad == 0 && v.GetSize() == n && (t4_i64)pl(v[n - 1]) == (t4_i64)n <<
+      33);
+    CHECK((t4_i64)pl(v[n - 2]) == ((t4_i64)(n - 1) << 33) + 5);
+    printf("  %d rows, %d mismatches\n", v.GetSize(), bad);
+  }
+  remove(fn_);
+#endif 
+}
+
 int main(int argc, char **argv) {
   // (what was done must be seen even if the program is ended abruptly)
   setvbuf(stdout, 0, _IONBF, 0);
@@ -176,7 +344,7 @@ int main(int argc, char **argv) {
   const char *fn = argc > 1 ? argv[1] : "tlarge.mk";
   int rows = argc > 2 ? atoi(argv[2]) : 6;
   i64 len = (argc > 3 ? atoi(argv[3]) : 512) * (i64)(1 << 20);
-  bool expectAll = false;
+  bool expectAll = false, limitOnly = false;
   for (int a = 4; a < argc; ++a) {
     if (strcmp(argv[a], "--expect-all") == 0)
       expectAll = true;
@@ -184,6 +352,8 @@ int main(int argc, char **argv) {
       sExpectMapped = false;
     else if (strncmp(argv[a], "--ints=", 7) == 0)
       sMillionInts = atoi(argv[a] + 7);
+    else if (strcmp(argv[a], "--limit-only") == 0)
+      limitOnly = true;
     else {
       fprintf(stderr, "unknown flag %s\n", argv[a]);
       return 2;
@@ -191,6 +361,12 @@ int main(int argc, char **argv) {
   }
 
   remove(fn);
+
+  if (limitOnly) {
+    TestColumnLimit(fn);
+    printf(sFailures == 0 ? "PASSED\n" : "FAILED (%d checks)\n", sFailures);
+    return sFailures == 0 ? 0 : 1;
+  }
 
   int good = 0, failedAt =  - 1;
   bool smallRow = false;
@@ -392,7 +568,11 @@ int main(int argc, char **argv) {
     remove(fn2);
   }
 
+  // (the file of the steps before is not needed any more, this needs room)
   free(buf);
+  remove(fn);
+  TestColumnLimit(fn);
+
   printf(sFailures == 0 ? "PASSED\n" : "FAILED (%d checks)\n", sFailures);
   return sFailures == 0 ? 0 : 1;
 }

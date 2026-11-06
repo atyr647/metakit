@@ -1,3 +1,38 @@
+2026-11-06    Columns and memos can be as large as the limit, 2^31 - 1 bytes
+
+    Bug fixed: a column or memo of more than 2^31 - 4096 bytes could crash
+    the program, although the limit for a column is 2^31 - 1 bytes.  A
+    column keeps room for changes (its "gap", less than two segments of 4 Kb)
+    within its buffers, and positions in them, which count that room, were
+    32-bit and went beyond 2^31 there.  Setting a memo of 2^31 - 1 bytes in
+    one piece crashed in c4_Column::Grow (a negative number of segments), and
+    writing one through mk::channel, in pieces of 4 Kb, crashed in c4_ColIter
+    once it went beyond 2^31 - 4096.  Changing such a memo where it was memory
+    mapped crashed from about the same size.  Those positions are 64-bit now
+    (t4_cpos, in src/column.h), and so is the size of the gap while segments
+    are removed from it, so all of 2^31 - 1 bytes can be used.  The sizes
+    and positions stored in a datafile are as they were: the format has not
+    changed, and older versions can read the files they could read before.
+    (Built without 64-bit integers, which no supported compiler is, the limit
+    for a column is two segments, 8 Kb, lower instead.)
+
+    What goes beyond the limit is refused as before: c4_BytesRef::Modify and
+    mk::channel writes, which leave the memo as it was, and a c4_SizeError for
+    all other growth, after which the changes are rolled back.
+
+    Tests: tlarge (make test-large) has a step 6 which makes memos of 2^31 -
+    4097, 2^31 - 4096, 2^31 - 4095 and 2^31 - 1 bytes, in one piece and in
+    pieces of 4 Kb, commits them, reopens them (memory-mapped) and changes
+    them in the middle and at the end, fills them up to the limit, and checks
+    that one more byte is refused.  It also commits 2^28 - 1 longs, a column
+    8 bytes below the limit, and adding one more row is a size error which
+    is rolled back.  This needs a 64-bit process, some 8 Gb of memory (of
+    which the mapped datafile is a part) and 4.3 Gb of disk, and takes a
+    minute or two; "tlarge <file> 0 0 --limit-only" runs just this step.  The
+    old code crashes in it.  tcl/tests/wide.test writes memos of the same
+    sizes through mk::channel and checks that a write beyond the limit fails
+    and leaves the memo as it was (make test-large in the Tcl build).
+
 2026-11-06    Mk4tcl: errors which were lost when writing a starkit
 
     mk4vfs (the starkit file system of tclvfs, not part of Metakit) lost
@@ -32,13 +67,8 @@
     mk::channel, commits it and reads its end (this needs over 2 Gb of memory
     and of disk, and runs with "make test-large" in the Tcl build directory).
 
-    Not fixed: a column of more than 2^31 - 4096 bytes (2 Gb less 4 Kb) can
-    make the program crash, in c4_Column, whose positions include the gap of
-    a column which is being changed and are 32-bit: writing exactly 2^31 - 1
-    bytes into a memo through mk::channel ends in a segmentation fault in
-    c4_ColIter::Next.  Writes of whole buffers of 4 Kb, as Tcl channels do,
-    stop just before that.  The limit for a column should take this into
-    account, or the positions be made wider; neither was done here.
+    (A column of more than 2^31 - 4096 bytes could still crash the program,
+    in c4_Column: that is fixed by the entry above.)
 
     Not in Metakit: mk4vfs itself has to leave out a file which it could not
     store completely, refuse a file of 2 Gb or more before Tcl aborts with

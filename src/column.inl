@@ -9,18 +9,18 @@
 /////////////////////////////////////////////////////////////////////////////
 // c4_Column
 
-d4_inline int c4_Column::fSegIndex(t4_i32 offset_)
+d4_inline int c4_Column::fSegIndex(t4_cpos offset_)
 {
     // limited by max array: 1 << (kSegBits + 15) with 16-bit ints
   return (int) (offset_ >> kSegBits);
 }
 
-d4_inline t4_i32 c4_Column::fSegOffset(int index_)
+d4_inline t4_cpos c4_Column::fSegOffset(int index_)
 {
-  return (t4_i32) index_ << kSegBits;
+  return (t4_cpos) index_ << kSegBits;
 }
 
-d4_inline int c4_Column::fSegRest(t4_i32 offset_)
+d4_inline int c4_Column::fSegRest(t4_cpos offset_)
 {
   return ((int) offset_ & kSegMask);
 }
@@ -56,11 +56,12 @@ d4_inline const t4_byte* c4_Column::LoadNow(t4_i32 offset_)
   if (_segments.GetSize() == 0)
     SetupSegments();
 
+  t4_cpos at = offset_;
   if (offset_ >= _gap)
-    offset_ += _slack;
+    at += _slack;
 
-  t4_byte* ptr = (t4_byte*) _segments.GetAt(fSegIndex(offset_));
-  return ptr + fSegRest(offset_); 
+  t4_byte* ptr = (t4_byte*) _segments.GetAt(fSegIndex(at));
+  return ptr + fSegRest(at); 
 }
 
 /////////////////////////////////////////////////////////////////////////////

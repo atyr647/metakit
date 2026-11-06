@@ -71,7 +71,14 @@ bool c4_WalkGuard::Has(const t4_byte *ptr_, t4_i32 count_) {
 #include <stdio.h>
 #include <stdlib.h>
 
+// Positions in the buffers of a column go beyond its size by the gap, which
+// is less than two segments.  With 64-bit integers they are 64-bit (t4_cpos),
+// without them they have to fit in 32 bits, so the limit is lower there.
+#if q4_FPOS64
 t4_i32 f4_MaxColumnSize = 0x7fffffff;
+#else 
+t4_i32 f4_MaxColumnSize = 0x7fffffff - 2 * c4_Column::kSegMax;
+#endif 
 
 static void DefaultSizeHandler(const c4_SizeError &e_) {
 #if q4_EXCEPTIONS
@@ -119,12 +126,13 @@ void c4_Column::Validate()const {
 
   d4_assert(_gap <= _size);
 
-  int n = fSegIndex(_size + _slack);
+  const t4_cpos end = (t4_cpos)_size + _slack;
+  int n = fSegIndex(end);
   d4_assert(n == _segments.GetSize() - 1);
 
   t4_byte *p = (t4_byte*)_segments.GetAt(n);
 
-  if (fSegRest(_size + _slack) == 0)
+  if (fSegRest(end) == 0)
     d4_assert(p == 0);
   else
     d4_assert(p != 0);
@@ -256,20 +264,21 @@ int c4_Column::AvailAt(t4_i32 offset_)const {
   d4_assert(offset_ <= _size);
   d4_assert(_gap <= _size);
 
-  t4_i32 limit = _gap;
+  t4_cpos at = offset_;
+  t4_cpos limit = _gap;
 
   if (offset_ >= _gap) {
-    offset_ += _slack;
-    limit = _size + _slack;
+    at += _slack;
+    limit = (t4_cpos)_size + _slack;
   }
 
-  int count = kSegMax - fSegRest(offset_);
-  if (offset_ + count > limit)
-    count = (int)(limit - offset_);
+  int count = kSegMax - fSegRest(at);
+  if (at + count > limit)
+    count = (int)(limit - at);
 
   // either some real data or it must be at the very end of all data
-  d4_assert(0 < count && count <= kSegMax || count == 0 && offset_ == _size +
-    _slack);
+  d4_assert(0 < count && count <= kSegMax || count == 0 && at == (t4_cpos)
+    _size + _slack);
   return count;
 }
 
@@ -307,7 +316,7 @@ void c4_Column::SetupSegments() {
   if (IsMapped() && (id < 0 || _persist->IsLocationOk(_position, _size))) {
     // setup for mapped files is quick, just fill in the pointers
     d4_assert(_position > 1);
-    d4_assert(_position + (n - 1) *kSegMax <= Strategy()._dataSize);
+    d4_assert(_position + (t4_fpos)(n - 1) *kSegMax <= Strategy()._dataSize);
     const t4_byte *map = Strategy()._mapStart + _position;
 
     for (int i = 0; i < n; ++i) {
@@ -356,11 +365,12 @@ t4_byte *c4_Column::CopyNow(t4_i32 offset_) {
 
   const t4_byte *ptr = LoadNow(offset_);
   if (UsesMap(ptr)) {
+    t4_cpos at = offset_;
     if (offset_ >= _gap)
-      offset_ += _slack;
+      at += _slack;
 
     // this will only force creation of a buffer
-    ptr = CopyData(offset_, offset_, 0);
+    ptr = CopyData(at, at, 0);
     d4_assert(!UsesMap(ptr));
   }
 
@@ -368,14 +378,15 @@ t4_byte *c4_Column::CopyNow(t4_i32 offset_) {
 }
 
 //@func Copies data, creating a buffer if needed.  Must be in single segment.
-t4_byte *c4_Column::CopyData(t4_i32 to_, t4_i32 from_, int count_) {
+t4_byte *c4_Column::CopyData(t4_cpos to_, t4_cpos from_, int count_) {
   int i = fSegIndex(to_);
   t4_byte *p = (t4_byte*)_segments.GetAt(i);
 
   if (UsesMap(p)) {
+    const t4_cpos end = (t4_cpos)_size + _slack;
     int n = kSegMax;
-    if (fSegOffset(i) + n > _size + _slack)
-      n = (int)(_size + _slack - fSegOffset(i));
+    if (fSegOffset(i) + n > end)
+      n = (int)(end - fSegOffset(i));
 
     d4_assert(n > 0);
 
@@ -426,17 +437,15 @@ void c4_Column::MoveGapUp(t4_i32 dest_) {
   // forward loop to copy contents down, in little pieces if need be
   while (_gap < dest_) {
     int n = kSegMax - fSegRest(_gap);
-    t4_i32 curr = _gap + n;
-    if (curr > dest_)
-      curr = dest_;
+    t4_i32 curr = n > dest_ - _gap ? dest_ : _gap + n;
 
     // copy to [_gap..curr), which is inside one segment
     d4_assert(_gap < curr);
     d4_assert(fSegIndex(_gap) == fSegIndex(curr - 1));
 
     // copy from [_gap + _slack .. curr + _slack), of the same size
-    t4_i32 fromBeg = _gap + _slack;
-    t4_i32 fromEnd = curr + _slack;
+    t4_cpos fromBeg = (t4_cpos)_gap + _slack;
+    t4_cpos fromEnd = (t4_cpos)curr + _slack;
 
     while (fromBeg < fromEnd) {
       int k = kSegMax - fSegRest(fromBeg);
@@ -463,12 +472,12 @@ void c4_Column::MoveGapDown(t4_i32 dest_) {
   d4_assert(_slack > 0);
 
   // reverse loop to copy contents up, in little pieces if need be
-  t4_i32 toEnd = _gap + _slack;
-  t4_i32 toBeg = dest_ + _slack;
+  t4_cpos toEnd = (t4_cpos)_gap + _slack;
+  t4_cpos toBeg = (t4_cpos)dest_ + _slack;
 
   while (toEnd > toBeg) {
     int n = fSegRest(toEnd);
-    t4_i32 curr = toEnd - (n ? n : kSegMax);
+    t4_cpos curr = toEnd - (n ? n : kSegMax);
     if (curr < toBeg)
       curr = toBeg;
 
@@ -477,7 +486,7 @@ void c4_Column::MoveGapDown(t4_i32 dest_) {
     d4_assert(fSegIndex(curr) == fSegIndex(toEnd - 1));
 
     // copy from [fromBeg .. _gap), which has the same size
-    t4_i32 fromBeg = _gap - (toEnd - curr);
+    t4_i32 fromBeg = _gap - (t4_i32)(toEnd - curr);
 
     while (_gap > fromBeg) {
       int k = fSegRest(_gap);
@@ -509,7 +518,7 @@ void c4_Column::MoveGapTo(t4_i32 pos_) {
     MoveGapUp(pos_);
   else if (_gap > pos_)
   // move the gap down, ie. some bytes up
-  if (_gap - pos_ > _size - _gap + fSegRest(pos_)) {
+  if (_gap - pos_ > (t4_cpos)_size - _gap + fSegRest(pos_)) {
     RemoveGap(); // it's faster to get rid of the gap instead
     _gap = pos_;
   } else
@@ -631,15 +640,15 @@ void c4_Column::Grow(t4_i32 off_, t4_i32 diff_) {
   // move the gap so it starts where we want to insert
   MoveGapTo(off_);
 
-  t4_i32 bigSlack = _slack;
+  t4_cpos bigSlack = _slack;
   if (bigSlack < diff_) {
     // only do more if this isn't good enough
     // number of segments to insert
-    int n = fSegIndex(diff_ - _slack + kSegMax - 1);
+    int n = fSegIndex((t4_cpos)diff_ - _slack + kSegMax - 1);
     d4_assert(n > 0);
 
     int i1 = fSegIndex(_gap);
-    int i2 = fSegIndex(_gap + _slack);
+    int i2 = fSegIndex((t4_cpos)_gap + _slack);
 
     bool moveBack = false;
 
@@ -664,7 +673,7 @@ void c4_Column::Grow(t4_i32 off_, t4_i32 diff_) {
     }
   }
 
-  d4_assert(diff_ <= bigSlack && bigSlack < diff_ + kSegMax);
+  d4_assert(diff_ <= bigSlack && bigSlack < (t4_cpos)diff_ + kSegMax);
 
   _gap += diff_;
   _slack = (int)(bigSlack - diff_);
@@ -703,14 +712,16 @@ void c4_Column::Shrink(t4_i32 off_, t4_i32 diff_) {
 
   // check whether the merged gap would cross a segment boundary
   int i1 = fSegIndex(_gap);
-  int i2 = fSegIndex(_gap + _slack + diff_);
+  int i2 = fSegIndex((t4_cpos)_gap + _slack + diff_);
 
   // drop complete segments, not a partially filled boundary
   if (fSegRest(_gap))
     ++i1;
 
   // moved up (was after the next if in the 1.7 May 28 build)
-  _slack += diff_;
+  // (the merged gap is as large as what is removed, until the segments in it
+  // are dropped, so it is only stored once it is less than two segments)
+  t4_cpos slack = (t4_cpos)_slack + diff_;
   _size -= diff_;
 
   int n = i2 - i1;
@@ -721,15 +732,16 @@ void c4_Column::Shrink(t4_i32 off_, t4_i32 diff_) {
     _segments.RemoveAt(i1, n);
 
     // the logic in 1.7 of May 28 was warped (the assert "fix" was wrong)
-    d4_assert(_slack >= fSegOffset(n));
-    _slack -= fSegOffset(n);
+    d4_assert(slack >= fSegOffset(n));
+    slack -= fSegOffset(n);
   }
 
-  d4_assert(0 <= _slack && _slack < 2 *kSegMax);
+  d4_assert(0 <= slack && slack < 2 *kSegMax);
+  _slack = (int)slack;
 
   // if the gap is at the end, get rid of a partial segment after it
   if (_gap == _size) {
-    int i = fSegIndex(_size + _slack);
+    int i = fSegIndex((t4_cpos)_size + _slack);
     if (i != fSegIndex(_gap)) {
       d4_assert(i == fSegIndex(_gap) + 1);
       d4_assert(i == _segments.GetSize() - 1);
@@ -737,24 +749,24 @@ void c4_Column::Shrink(t4_i32 off_, t4_i32 diff_) {
       ReleaseSegment(i);
       _segments.SetAt(i, 0);
 
-      _slack -= fSegRest(_size + _slack);
+      _slack -= fSegRest((t4_cpos)_size + _slack);
 
       d4_assert(_slack < kSegMax);
-      d4_assert(fSegRest(_gap + _slack) == 0);
+      d4_assert(fSegRest((t4_cpos)_gap + _slack) == 0);
     }
   }
 
   // the slack may still be too large to leave as is
   if (_slack >= kSegMax) {
     // move the bytes just after the end of the gap one segment down
-    int x = fSegRest(_gap + _slack);
+    int x = fSegRest((t4_cpos)_gap + _slack);
     int r = kSegMax - x;
-    if (_gap + r > _size)
+    if (r > _size - _gap)
       r = (int)(_size - _gap);
 
-    CopyData(_gap, _gap + _slack, r);
+    CopyData(_gap, (t4_cpos)_gap + _slack, r);
 
-    int i = fSegIndex(_gap + kSegMax - 1);
+    int i = fSegIndex((t4_cpos)_gap + kSegMax - 1);
     ReleaseSegment(i);
 
     if (r + x < kSegMax)
@@ -777,8 +789,8 @@ void c4_Column::FinishSlack() {
   Validate();
 
   // optimization: if partial end segment easily fits in slack, move it down
-  t4_i32 gapEnd = _gap + _slack;
-  if (!fSegRest(gapEnd) && gapEnd >= _size + 500) {
+  t4_cpos gapEnd = (t4_cpos)_gap + _slack;
+  if (!fSegRest(gapEnd) && gapEnd >= (t4_cpos)_size + 500) {
     // slack is at least 500 bytes more than the partial end segment
     // also, the gap must end exactly on a segment boundary
     int i = fSegIndex(gapEnd);
@@ -892,10 +904,11 @@ void c4_Column::PushValue(t4_byte * &ptr_, t4_i32 v_) {
     *ptr_++ = 0;
   }
 
+  // (n is checked first: a shift by 32 or more is not defined)
   int n = 0;
   do {
     n += 7;
-  } while ((v_ >> n) && n < 32);
+  } while (n < 32 && (v_ >> n));
 
   while (n) {
     n -= 7;

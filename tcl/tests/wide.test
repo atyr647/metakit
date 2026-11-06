@@ -152,5 +152,63 @@ test 6 {writing a memo beyond 2 Gb through a channel} -constraints largeData -bo
   set r
 } -cleanup {catch {mk::file close db}; file delete $f} -match glob -result {1 {error writing "*": file too large} 1 1 1 abcdefgh}
 
+# A memo can be as large as the limit for a column, 2^31 - 1 bytes.  It used to
+# crash the program from 2^31 - 4096 bytes on, since positions in a column
+# also count the room it keeps for changes, and went beyond 31 bits there:
+# a channel which writes in buffers of 4 Kb got just below that, and crashed
+# with the last bytes.  Memos of the sizes around there and at the limit are
+# written, then one byte more than still fits (a buffer of the channel holds
+# it all, so it is a single write), which is refused and leaves the memo as
+# it was, and a commit and reading it back confirm that.  This needs over 2 Gb
+# of memory and of disk (constraint largeData).
+test 7 {memos at the limit for a column, written through a channel} -constraints largeData -body {
+  set chunk [string repeat abcdefgh [expr {8 << 20}]]
+  set limit 0x7fffffff
+  set r {}
+  foreach size [list [expr {(1 << 31) - 4097}] [expr {(1 << 31) - 4096}] \
+      [expr {(1 << 31) - 4095}] $limit] {
+    file delete $f
+    mk::file open db $f
+    mk::view layout db.a {name:S m:B}
+    mk::row append db.a name big
+
+    set fd [mk::channel db.a!0 m w]
+    fconfigure $fd -translation binary
+    for {set left $size} {$left > 0} {incr left -[string length $chunk]} {
+      puts -nonewline $fd [string range $chunk 0 [expr {$left - 1}]]
+    }
+    close $fd
+    set ok [expr {[mk::get db.a!0 -size m] == $size}]
+
+    set fd [mk::channel db.a!0 m a]
+    fconfigure $fd -translation binary -buffersize 65536
+    seek $fd 0 end
+    puts -nonewline $fd [string repeat x [expr {$limit - $size + 1}]]
+    set err [catch {flush $fd} msg]
+    catch {close $fd}
+    lappend ok $err [string match {*file too large} $msg] \
+      [expr {[mk::get db.a!0 -size m] == $size}]
+
+    mk::file commit db
+    mk::file close db
+
+    # what was written is there, and ends as it should
+    mk::file open db $f -readonly
+    lappend ok [expr {[mk::get db.a!0 -size m] == $size}]
+    set fd [mk::channel db.a!0 m]
+    fconfigure $fd -translation binary
+    set head [read $fd 8]
+    seek $fd -8 end
+    set tail [read $fd]
+    close $fd
+    mk::file close db
+    set k [expr {$size % 8}]
+    lappend ok [expr {$head eq "abcdefgh"}] [expr {$tail eq [string range \
+      abcdefghabcdefgh $k [expr {$k + 7}]]}]
+    lappend r $ok
+  }
+  set r
+} -cleanup {catch {mk::file close db}; file delete $f} -result [lrepeat 4 {1 1 1 1 1 1 1}]
+
 file delete $f
 cleanupTests

@@ -28,6 +28,17 @@ class c4_Strategy; // not defined here
 // it whenever a column grows: it is a variable only so tests can lower it.
 extern t4_i32 f4_MaxColumnSize;
 
+// A position in the buffers of a column, which hold its gap as well as its
+// data: they go up to the size of the column plus the gap, which is less than
+// two segments.  For a column near the limit that is more than 2^31, so these
+// positions are 64-bit, while what the column holds is addressed with t4_i32.
+// Where there are no 64-bit integers, the limit is lower instead (column.cpp).
+#if q4_FPOS64
+typedef t4_i64 t4_cpos;
+#else 
+typedef t4_i32 t4_cpos;
+#endif 
+
 // Reports a column which would become too large, see c4_SetSizeErrorHandler.
 // This is called before anything is changed, and does not return.
 extern void f4_ColumnTooLarge(t4_fpos wanted_);
@@ -124,9 +135,10 @@ class c4_Column {
     };
 
   private:
-    static int fSegIndex(t4_i32 offset_);
-    static t4_i32 fSegOffset(int index_);
-    static int fSegRest(t4_i32 offset_);
+    // (these are for positions in the buffers, which include the gap)
+    static int fSegIndex(t4_cpos offset_);
+    static t4_cpos fSegOffset(int index_);
+    static int fSegRest(t4_cpos offset_);
 
     bool UsesMap(const t4_byte*)const;
     bool IsMapped()const;
@@ -140,7 +152,7 @@ class c4_Column {
     void MoveGapDown(t4_i32 pos_);
     void MoveGapTo(t4_i32 pos_);
 
-    t4_byte *CopyData(t4_i32, t4_i32, int);
+    t4_byte *CopyData(t4_cpos, t4_cpos, int);
     void TooLarge(t4_fpos wanted_)const;
 };
 
