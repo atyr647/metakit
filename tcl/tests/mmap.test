@@ -1,0 +1,77 @@
+#!/usr/bin/env tclsh
+# %renumber<^\s*test >%
+
+source [file join [file dir [info script]] initests.tcl]
+
+test 0 {} {
+  package require Mk4tcl
+} $version
+
+# Metakit memory-maps a datafile where the platform can (src/fileio.cpp, if
+# HAVE_MMAP).  The TEA configure script of Mk4tcl found mmap, but config.h
+# turned it off again, and nothing showed it: datafiles were read with stdio.
+# On Linux the mappings of a process are listed in /proc/self/maps, which is
+# where this looks for the datafile (by its inode, which does not depend on
+# how the path is spelled).
+
+testConstraint procmaps [expr {[file readable /proc/self/maps]
+                               && $tcl_platform(os) eq "Linux"}]
+
+# the number of bytes of the file which are mapped into this process
+proc mappedbytes {file} {
+  file stat $file sb
+  set fd [open /proc/self/maps]
+  set lines [split [read $fd] \n]
+  close $fd
+  set total 0
+  foreach line $lines {
+    # start-end perms offset dev inode path
+    if {[llength $line] >= 6 && [lindex $line 4] == $sb(ino)
+        && [file tail [lindex $line end]] eq [file tail $file]} {
+      scan [lindex $line 0] {%llx-%llx} start end
+      incr total [expr {$end - $start}]
+    }
+  }
+  return $total
+}
+
+set f f1.dat
+test 1 {a datafile opened to read is memory-mapped} -constraints procmaps -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {s:S b:B}
+  for {set i 0} {$i < 20} {incr i} {
+    mk::row append db.a s "row $i" b [string repeat x 30000]
+  }
+  mk::file close db
+
+  equal 0 [mappedbytes $f]
+  mk::file open db $f -readonly
+  set n [mappedbytes $f]
+  equal 30000 [string length [mk::get db.a!19 b]]
+  mk::file close db
+
+  # all of it is mapped (in whole pages), and nothing is left after closing
+  list [expr {$n >= [file size $f]}] [mappedbytes $f]
+} -cleanup {catch {mk::file close db}; file delete $f} -result {1 0}
+
+test 2 {the mapping follows a datafile which grows} -constraints procmaps -body {
+  file delete $f
+
+  mk::file open db $f
+  mk::view layout db.a {b:B}
+  mk::row append db.a b [string repeat a 50000]
+  mk::file commit db
+  set r [expr {[mappedbytes $f] >= [file size $f]}]
+
+  mk::row append db.a b [string repeat b 500000]
+  mk::file commit db
+  lappend r [expr {[file size $f] > 500000}]
+  lappend r [expr {[mappedbytes $f] >= [file size $f]}]
+  lappend r [string range [mk::get db.a!1 b] 499998 end]
+} -cleanup {catch {mk::file close db}; file delete $f} -result {1 1 1 bb}
+
+file delete $f
+rename mappedbytes {}
+cleanupTests

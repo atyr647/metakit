@@ -1,3 +1,27 @@
+2026-11-06    Mk4tcl memory-maps datafiles again (TEA build)
+
+    The TEA build of Mk4tcl (tcl/configure) never used mmap: its config.h
+    was a copy of tcl/config.h.in, which had the "#undef HAVE_MMAP" lines
+    that autoheader writes, while TEA passes what configure finds on the
+    command line (-D... in DEFS).  So src/fileio.cpp read every datafile
+    with stdio, and memmove was replaced by a loop of its own.  Nothing
+    showed this, except in speed and memory use for large datafiles.  The
+    C++ library built with unix/configure was not affected.
+
+    tcl/configure now checks for mmap, memmove and bcopy as unix/configure
+    does (AC_CHECK_FUNCS in tcl/configure.in), and tcl/config.h.in no longer
+    undefines anything that is set on the command line.  Where mmap is
+    missing (Windows has its own code for this) it stays off as before.
+    tcl/configure is still the one made by autoconf 2.59, with the check
+    added by hand: the code which 2.59 generated for it in unix/configure,
+    for C instead of C++.  It was not regenerated, because autoconf 2.71
+    makes a configure from this configure.in and TEA 3.6 which leaves out
+    -DTCL_THREADS.
+
+    Test: tcl/tests/mmap.test looks in /proc/self/maps (Linux) for the
+    datafile, after opening it to read and after commits which make it grow.
+    It fails with the Mk4tcl built before this change.
+
 2026-11-04    Datafiles larger than 2 Gb
 
     Metakit can now commit, reopen and memory-map datafiles of any size,

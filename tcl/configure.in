@@ -46,6 +46,11 @@ else
 fi
 AC_SUBST(CLEANFILES)
 
+# Metakit's own checks, as in unix/configure.in.  TEA passes their results
+# on the command line (DEFS in the Makefile), see config.h.in.  Without
+# HAVE_MMAP, src/fileio.cpp reads datafiles with stdio instead of mapping them.
+AC_CHECK_FUNCS(mmap memmove bcopy)
+
 TEA_PUBLIC_TCL_HEADERS
 TEA_ENABLE_THREADS
 TEA_ENABLE_SHARED
