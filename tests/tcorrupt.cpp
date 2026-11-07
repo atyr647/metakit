@@ -5,7 +5,7 @@
 // Takes valid datafiles (all kinds of properties, subviews, memos, both
 // kinds of marks, both commit modes), damages them in random ways (bytes
 // changed, ranges zeroed or filled, the end cut off, pieces swapped), opens
-// the result and reads everything in it.  What it finds does not matter,
+// the result and reads everything in it, with and without a header in front.  What it finds does not matter,
 // what matters is that it is a database or nothing, and not a crash, a hang,
 // or a memory error (this is meant to be run with AddressSanitizer too).
 //
@@ -360,9 +360,18 @@ int main(int argc, char **argv) {
 
     const int kind = Below(kKinds);
     std::string d = valid[kind];
+    // every other one has something in front, as a starkit's runtime: the datafile is found from
+    // the end, and positions in it are relative to where it starts, not to the start of the file
+    const bool header = seed % 2 == 1;
+    if (header)
+      d = std::string(4096 + Below(3) * 1000, '#') + d;
     if (sVerbose)
-      printf("seed %lu, kind %d, %d bytes\n", seed, kind, (int)d.size());
+      printf("seed %lu, kind %d, %d bytes%s\n", seed, kind, (int)d.size(), header ?
+        ", with a header" : "");
     Damage(d);
+    // and the tails, which say where the datafile starts (and so where its positions count from)
+    if (header && d.size() >= 24 && Below(2) == 0)
+      d[d.size() - 1 - Below(24)] ^= (char)(1 + Below(255));
     WriteFile("tcorrupt_dmg.mk", d);
 
     {

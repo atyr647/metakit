@@ -1309,7 +1309,14 @@ bool c4_Persist::LoadIt(c4_Column &walk_) {
   if (_strategy._failure != 0)
     return false;
 
-  if (_strategy.EndOfData(limit) < 0) {
+  t4_fpos end = _strategy.EndOfData(limit);
+  // EndOfData moves the base to where the data starts, which is not the start of the file when
+  // something is in front of it (a starkit's runtime, a kit's seal): positions in the datafile are
+  // relative to that base, so the limit they are checked against must be too, or damaged ones
+  // pointing up to the base's distance past the end pass as good and the column is mapped there
+  _knownLimit = limit - _strategy._baseOffset;
+
+  if (end < 0) {
     // A file which starts with a header has had its first commit interrupted,
     // so it is the datafile which is going to be written, from the start.  If
     // there is something else then the datafile goes behind it.
