@@ -354,8 +354,11 @@ static void TryImages(const Image &dur_, const Piece *pend_, int npend_,
   unsigned long before_, unsigned long after_, Totals &t_, int round_,
   int mode_) {
   Image img;
-  const int n = npend_;
-  CHECK(n < 64); // the combinations are bits of a 64-bit number
+  // the combinations are bits of a 64-bit number (when it is more than that,
+  // as it is if nothing is ever forced to disk, only the first are in them)
+  const int n = npend_ < 63 ? npend_: 63;
+  if (sGoOn)
+    CHECK(npend_ < 64);
   const bool all = n <= 8;
   const int tries = all ? 1 << n: 2 * n + 400;
 

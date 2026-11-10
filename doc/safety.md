@@ -139,10 +139,12 @@ for files in which the tail is in that place; the file format is the same.
   the state before the commit or the one after it, not damaged, and must take
   more commits. With `DataSync` before and after the commit tail: 31,794 disks
   tried over four configurations, none wrong. Without any, in default
-  mode 42,679 disks were tried and 39,131 were wrong (17,361 damaged), and with it only before
-  the tail, or only after it, some were still wrong: both places are needed
-  (`tcrash all` shows the numbers). 75,470 more with the commit tail at the edge
-  of a sector: none wrong, and 348 wrong without the change to commits in place.
+  mode 42,595 disks were tried and 39,162 were wrong (18,455 found damaged), and
+  with it only before the tail, or only after it, some were still wrong (3,240 and
+  636 in default mode): both places are needed (`tcrash all` shows the numbers).
+  75,470 more with the commit tail at the edge of a sector: none wrong, and 348
+  wrong without the change to commits in place (a sweep of 1,100 positions of the
+  tail, 8.2 million disks, none wrong).
 - `tsync.sh` runs commits under `strace` and checks that the calls are: writes,
   `fsync`, one write of the commit tail, `fsync` (and then the header), in all
   four configurations (modes 1 and 2, standard and wide marks), the directory of
