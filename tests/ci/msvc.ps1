@@ -37,7 +37,7 @@ Run "compile library" cl @flags /c @libSrc
 Run "make library" lib /nologo /OUT:mk4.lib @libObj
 
 # the programs which are one file
-foreach ($t in "twide", "tfuzz", "tcorrupt", "tlarge") {
+foreach ($t in "twide", "tfuzz", "tcorrupt", "tcrash", "tlarge") {
   Run "build $t" cl @flags "$root\tests\$t.cpp" /Fe:$t.exe /link mk4.lib
 }
 
@@ -60,6 +60,7 @@ if ($LASTEXITCODE -ne 0) { throw "FAILED: regress output differs from tests/ok" 
 Run "twide" .\twide.exe
 Run "tfuzz" .\tfuzz.exe
 Run "tcorrupt" .\tcorrupt.exe
+Run "tcrash" .\tcrash.exe
 
 if ($LargeArgs -ne "") {
   $largeList = @($LargeArgs -split " ")

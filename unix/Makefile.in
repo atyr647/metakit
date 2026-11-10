@@ -76,7 +76,7 @@ tcl: Makefile Mk4tcl$(LIBEXT)
 
 python: Makefile Mk4py$(LIBEXT)
 
-test: Makefile libmk4$(LIBEXT) regress twide tfuzz tcorrupt
+test: Makefile libmk4$(LIBEXT) regress twide tfuzz tcorrupt tcrash tsync
 	test -d tests || mkdir tests
 	-test -d ../tests/ok/CVS && (test -d tests/CVS || mkdir tests/CVS)
 	test -f reversed || cp $(srcdir)/reversed .
@@ -85,6 +85,8 @@ test: Makefile libmk4$(LIBEXT) regress twide tfuzz tcorrupt
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./twide
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tfuzz
 	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tcorrupt
+	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. ./tcrash
+	LD_LIBRARY_PATH=. DYLD_LIBRARY_PATH=. $(SHELL) $(srcdir)/../tests/tsync.sh .
 
 # the randomized tests with many more scenarios, which takes a few minutes
 test-fuzz: Makefile libmk4$(LIBEXT) tfuzz tcorrupt
@@ -129,7 +131,7 @@ install-python: Mk4py$(LIBEXT)
 
 clean:
 	rm -f *$(LIBEXT) *.o
-	rm -f $(DEMOS) struct regress twide tfuzz tcorrupt tfuzz_*.mk tlarge tlarge.mk tlarge_ints.mk myfile.dat secret.dat twide_*.mk
+	rm -f $(DEMOS) struct regress twide tfuzz tcorrupt tcrash tsync tfuzz_*.mk tlarge tlarge.mk tlarge_ints.mk myfile.dat secret.dat twide_*.mk tsync.mk
 	rm -rf tests/[a-z]*
 
 distclean: clean
@@ -201,6 +203,14 @@ tfuzz: $(srcdir)/../tests/tfuzz.cpp libmk4$(LIBEXT)
 tcorrupt: $(srcdir)/../tests/tcorrupt.cpp libmk4$(LIBEXT)
 	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
 		$(srcdir)/../tests/tcorrupt.cpp libmk4$(LIBEXT) @LIBS@
+
+tcrash: $(srcdir)/../tests/tcrash.cpp libmk4$(LIBEXT)
+	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
+		$(srcdir)/../tests/tcrash.cpp libmk4$(LIBEXT) @LIBS@
+
+tsync: $(srcdir)/../tests/tsync.cpp libmk4$(LIBEXT)
+	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \
+		$(srcdir)/../tests/tsync.cpp libmk4$(LIBEXT) @LIBS@
 
 tlarge: $(srcdir)/../tests/tlarge.cpp libmk4$(LIBEXT)
 	$(CXX) $(CXX_SWITCHES) -o $@$(EXEEXT) \

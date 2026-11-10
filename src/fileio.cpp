@@ -20,6 +20,10 @@
 #include "header.h"
 #include "mk4io.h"
 
+#include <errno.h>
+#include <stdlib.h>
+#include <string.h>
+
 #if q4_WIN32
 #if q4_MSVC && !q4_STRICT
 #pragma warning(disable: 4201) // nonstandard extension used : ...
@@ -199,6 +203,62 @@ static void FinalizeIO() {
 static bool f4_FitsInMemory(t4_fpos len_) {
   return (t4_fpos)(size_t)len_ == len_;
 }
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Forcing data to the disk: fflush only hands it to the operating system.
+//  macOS needs F_FULLFSYNC, since its fsync does not reach the drive's cache,
+//  but not every filesystem has it.  The result is false if it did not work.
+
+static bool f4_SyncFile(FILE *file_) {
+#if q4_WIN32 && !q4_WINCE
+  return FlushFileBuffers((HANDLE)_get_osfhandle(_fileno(file_))) != 0;
+#elif q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
+  const int fd = fileno(file_);
+#ifdef F_FULLFSYNC
+  if (fcntl(fd, F_FULLFSYNC) == 0)
+    return true;
+#endif 
+  return fsync(fd) == 0;
+#else 
+  return true;
+#endif 
+}
+
+// Setting this environment variable (to anything but empty or 0) turns the
+// forcing to disk off, which is much faster, for loading data in bulk, or for
+// tests which do not care for a power cut.  Data is still handed to the system.
+static bool f4_NoSync() {
+  const char *e = getenv("METAKIT_NOSYNC");
+  return e != 0 && *e != 0 && strcmp(e, "0") != 0;
+}
+
+#if q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
+// a new file is only there after a power cut if its directory is on the disk
+static void f4_SyncDirectory(const char *fname_) {
+  if (f4_NoSync())
+    return ;
+
+  char dir[1024];
+  size_t n = strlen(fname_);
+  if (n >= sizeof dir)
+    return ;
+  memcpy(dir, fname_, n + 1);
+
+  while (n > 0 && dir[n - 1] != '/')
+    --n;
+  if (n == 0)
+    strcpy(dir, ".");
+  else
+    dir[n > 1 ? n - 1: 1] = 0;
+
+  const int fd = open(dir, O_RDONLY);
+  if (fd >= 0) {
+    fsync(fd);
+    close(fd);
+  }
+}
+#endif 
 
 /////////////////////////////////////////////////////////////////////////////
 
@@ -394,8 +454,12 @@ bool c4_FileStrategy::DataOpen(const char *fname_, int mode_) {
 #else 
     _cleanup = _file = fopen(fname_, "w+b");
 #if q4_UNIX
-    if (_file != 0)
+    if (_file != 0) {
       fcntl(fileno(_file), F_SETFD, FD_CLOEXEC);
+#if !(defined (q4_CARBON) && q4_CARBON)
+      f4_SyncDirectory(fname_);
+#endif 
+    }
 #endif //q4_UNIX
 #endif //q4_WIN32 && !q4_BORC && !q4_WINCE
   }
@@ -475,6 +539,16 @@ void c4_FileStrategy::DataCommit(t4_fpos limit_) {
     _file->SetLength(limit_); // now we can resize the file
 #endif 
     ResetFileMapping(); // remap, since file length may have changed
+  }
+}
+
+void c4_FileStrategy::DataSync() {
+  d4_assert(_file != 0);
+
+  errno = 0;
+  if (fflush(_file) < 0 || (!f4_NoSync() && !f4_SyncFile(_file))) {
+    _failure = errno != 0 ? errno:  - 1;
+    d4_assert(_failure != 0);
   }
 }
 

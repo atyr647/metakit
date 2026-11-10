@@ -19,6 +19,9 @@
 t4_fpos f4_WideAbove = 0x7fffffff - 64;
 t4_fpos f4_MaxFileEnd = f4_kMaxWideEnd;
 
+// a disk writes this much as a whole, see the commit tail written in place
+static const t4_fpos kSectorSize = 512;
+
 /////////////////////////////////////////////////////////////////////////////
 
 class c4_FileMark {
@@ -905,8 +908,14 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 
   // True if the file need not be extended due to internal free space.  This
   // overwrites the commit tail, which can only be done safely in a single
-  // write of 8 bytes, so wide files do not do this, they always append.
-  bool inPlace = !wide && oldTails == kStdTailSize && end0 == limit - 8;
+  // write of 8 bytes, so wide files do not do this, they always append.  A disk
+  // only writes a sector as a whole, so if the 8 bytes are in two sectors, a
+  // power cut can leave half of the old commit tail and half of the new one.
+  // That is not done either: the file is extended, which moves the next tail.
+  const t4_fpos tailAt = _strategy._baseOffset + end0 - 8;
+  const bool tailSplit = tailAt % kSectorSize > kSectorSize - 8;
+  bool inPlace = !wide && oldTails == kStdTailSize && end0 == limit - 8 &&
+    !tailSplit;
   if (inPlace) {
     d4_assert(!_fullScan);
     _space->Release(end0, 8);
@@ -1029,7 +1038,13 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
     _strategy.DataWrite(0, &head, sizeof head);
   }
 
+  // Everything the commit tail leads to must be on the disk before the tail is
+  // written.  A power cut does not keep the order of writes, and could leave a
+  // valid commit tail which leads to data that never got there.
   _strategy.DataCommit(0);
+  _strategy.DataSync();
+  if (_strategy._failure != 0)
+    return ;
 
   if (wide) {
     // the extension is rewritten as well, now that the root is known
@@ -1042,11 +1057,15 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
   }
   d4_assert(_strategy.FileSize() - _strategy._baseOffset == end2);
 
+  // The commit is complete once the commit tail is on the disk.  Should that
+  // fail, the commit is reported as failed, but it is in the file now, so the
+  // rest is done to leave this storage in agreement with it.
+  _strategy.DataCommit(0);
+  _strategy.DataSync();
+
   // do not alter the file header in extend mode, unless it is new (a header
   // of a datafile which has no commit was already done, above)
   if (!_fullScan && (_mode == 1 || end == 0)) {
-    _strategy.DataCommit(0);
-
     c4_FileMark head(end2, _strategy._bytesFlipped, false, wide);
     d4_assert(head.IsHeader());
     _strategy.DataWrite(0, &head, sizeof head);

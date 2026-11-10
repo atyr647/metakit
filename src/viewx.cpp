@@ -685,6 +685,9 @@ t4_i32 c4_Strategy::FreshGeneration() {
   return 1;
 }
 
+/// Force everything written so far to stable storage, if there is such a thing
+void c4_Strategy::DataSync(){}
+
 /// Define the base offset where data is stored
 void c4_Strategy::SetBase(t4_fpos base_) {
   t4_fpos off = base_ - _baseOffset;

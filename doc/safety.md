@@ -89,3 +89,68 @@ steady state of a database that is only updated) replaces 8 bytes in the middle
 of the file. A disk only writes a single sector (512 bytes) as one unit. If
 those 8 bytes straddle a sector boundary (7 positions in 512), a power cut can
 leave half of the old tail and half of the new one.
+
+## Durability: what a commit does now
+
+A commit forces its data to disk twice (`c4_Strategy::DataSync`, which for a
+file is `fsync` on Linux and the other Unixes, `fcntl(F_FULLFSYNC)` on macOS
+with `fsync` where that is not supported, `FlushFileBuffers` on Windows):
+
+1. after the data, the structure and the root, **before** the commit tail
+   is written (step 3 above);
+2. after the commit tail is written (step 4), so that when `Commit` returns, the
+   commit is on the disk.
+
+The header write (step 5) and the end marker (step 1) are not forced: neither
+decides what a reader finds (see above), and the model below shows a commit does
+not need it. The bytes written are exactly the same as before, in the same
+order, so the file format is unchanged and older programs read new files (this
+is tested, see `tests/compat/compat.sh`).
+
+A new file also has its directory forced to disk when it is created (Unix), or
+a power cut can lose the file as a whole.
+
+If forcing fails, `Commit` returns false. Before the commit tail: nothing was
+made visible. After it: the commit is in the file, but it is not certain that it
+is on the disk.
+
+**Cost.** Two forced writes per commit. On the machine this was made on (ext4
+on a virtual disk) a commit of a small change took 0.014 ms before and 7.9 ms
+after, and a file system with a slow `fsync`, or macOS with `F_FULLFSYNC`,
+is slower than that. A program which commits in a loop to load data should
+commit less often, or set the environment variable `METAKIT_NOSYNC` (to
+anything but empty or 0) to turn the forcing off: that is the old behaviour.
+
+**Commits in place.** A commit in default mode which fits in the free space of
+the file overwrote the old 8-byte commit tail in the middle of the file. If
+those 8 bytes straddle a boundary between two 512-byte sectors, a disk can
+write one sector and not the other, and a power cut leaves half an old tail
+and half a new one. That is now not done: if the tail would be in two
+sectors, the commit extends the file as any other commit does (the next one
+is in a different place). This is the only change in what is written, and only
+for files in which the tail is in that place; the file format is the same.
+
+**How this was checked** (`tests/tcrash.cpp`, `tests/tsync.sh`, both run by
+`make test`):
+
+- `tcrash` is a model of a disk which loses what was not forced: every write is
+  pending until `DataSync`, and after each write of a commit, every combination
+  of pending writes (a sector at a time) is read back as a datafile. It must be
+  the state before the commit or the one after it, not damaged, and must take
+  more commits. With `DataSync` before and after the commit tail: 31,794 disks
+  tried over four configurations, none wrong. Without any, in default
+  mode 42,679 disks were tried and 39,131 were wrong (17,361 damaged), and with it only before
+  the tail, or only after it, some were still wrong: both places are needed
+  (`tcrash all` shows the numbers). 75,470 more with the commit tail at the edge
+  of a sector: none wrong, and 348 wrong without the change to commits in place.
+- `tsync.sh` runs commits under `strace` and checks that the calls are: writes,
+  `fsync`, one write of the commit tail, `fsync` (and then the header), in all
+  four configurations (modes 1 and 2, standard and wide marks), the directory of
+  a new file, and no `fsync` at all with `METAKIT_NOSYNC`.
+
+**What is not shown.** The model is the promise of `DataSync` and the sector
+as the unit of writing (some disks promise more, a few less); a real power cut
+has not been tried, nor has a disk which lies about forcing data. The macOS and
+Windows calls were not run (the Windows branch was not even compiled, there was
+no compiler for it): on Linux, `F_FULLFSYNC` was only tried as a made-up
+constant to see that the fallback to `fsync` works.

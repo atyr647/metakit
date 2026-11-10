@@ -51,6 +51,8 @@ class c4_FileStrategy: public c4_Strategy {
     virtual t4_fpos FileSize();
     /// Return a good value to use as fresh generation counter
     virtual t4_i32 FreshGeneration();
+    /// Force everything written so far to the disk, see c4_Strategy
+    virtual void DataSync();
 
   protected:
     /// Pointer to file object

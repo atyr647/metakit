@@ -31,6 +31,8 @@ jobs:
           ../unix/configure
           make -j4 libmk4.so regress twide tfuzz tcorrupt tlarge mkinfo ||
             make -j4 regress twide tfuzz tcorrupt tlarge mkinfo
+      - name: strace (tests/tsync.sh looks at system calls with it)
+        run: command -v strace || sudo apt-get install -y strace
       - name: tests
         working-directory: build
         run: make test

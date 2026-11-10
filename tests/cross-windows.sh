@@ -45,6 +45,7 @@ $CXX $FLAGS -o regress.exe $T/regress.cpp $T/tbasic1.cpp $T/tbasic2.cpp \
   $T/tstore2.cpp $T/tstore3.cpp $T/tstore4.cpp $T/tstore5.cpp $OBJS
 $CXX $FLAGS -o twide.exe $T/twide.cpp $OBJS
 $CXX $FLAGS -o tfuzz.exe $T/tfuzz.cpp $OBJS
+$CXX $FLAGS -o tcrash.exe $T/tcrash.cpp $OBJS
 $CXX $FLAGS -o tlarge.exe $T/tlarge.cpp $OBJS
 
 cp "$ROOT/unix/reversed" run/
@@ -56,6 +57,8 @@ echo "== twide"
 wine ../twide.exe | tail -1
 echo "== tfuzz"
 wine ../tfuzz.exe | tail -1
+echo "== tcrash"
+wine ../tcrash.exe | tail -1
 echo "== tlarge"
 wine ../tlarge.exe tlarge.mk $TLARGE_ARGS | tail -1
 rm -f tlarge.mk tlarge_ints.mk

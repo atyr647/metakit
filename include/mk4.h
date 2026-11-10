@@ -862,6 +862,8 @@ class c4_Strategy {
     virtual void ResetFileMapping();
     virtual t4_fpos FileSize();
     virtual t4_i32 FreshGeneration();
+    /// Force everything written so far to stable storage (default: nothing)
+    virtual void DataSync();
 
     void SetBase(t4_fpos);
     t4_fpos EndOfData(t4_fpos =  - 1);

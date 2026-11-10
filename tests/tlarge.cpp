@@ -163,6 +163,9 @@ class CrashStrategy: public c4_FileStrategy {
       if (_budget > 0)
         c4_FileStrategy::DataCommit(newSize_);
     }
+
+    // this is about a commit which stops, not about forcing data to the disk
+    virtual void DataSync(){}
 };
 
 static Row sRows[64];

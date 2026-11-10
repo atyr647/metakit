@@ -1,3 +1,33 @@
+2026-11-10    Commits survive a power cut: data is forced to disk
+
+    A commit only did fflush, which hands data to the operating system, and
+    nothing forced it to the disk.  After a power cut the disk could have the
+    commit tail (the last 8 bytes, which make the commit visible) but not
+    the data it leads to.  Now a commit forces its data to disk before the
+    commit tail is written, and the tail itself after it: fsync on Linux and
+    other Unixes, fcntl F_FULLFSYNC on macOS (fsync where that is not
+    supported), FlushFileBuffers on Windows.  A new datafile has its directory
+    forced too.  A new virtual function c4_Strategy::DataSync does this (it
+    does nothing in a strategy which does not override it).  If it fails, Commit
+    returns false.  The bytes written, and their order, are as before: the
+    file format is the same, and byte for byte the same files as the version of
+    2011 (tests/compat/compat.sh).
+
+    A commit takes longer, two forced writes: 8 ms instead of 0.014 ms for a
+    small change on one machine.  Set the environment variable METAKIT_NOSYNC
+    (to anything but empty or 0) to turn forcing off, as for loading data.
+
+    Also: a commit in default mode which fits in the free space of the
+    datafile overwrote the old commit tail in place, which can be torn by a
+    power cut if it is across the boundary of two 512-byte sectors.  In that
+    case the datafile is extended instead, like for any other commit.
+
+    Tests: tcrash is a model of a disk which loses what was not forced, and
+    reads back every combination of what a commit had written when the power
+    went; tsync.sh checks the system calls (with strace); see doc/safety.md,
+    which also describes in what order a commit writes, and which write makes
+    it visible: the commit tail, not the header.
+
 2026-11-06    Columns and memos can be as large as the limit, 2^31 - 1 bytes
 
     Bug fixed: a column or memo of more than 2^31 - 4096 bytes could crash
