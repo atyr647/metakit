@@ -64,6 +64,43 @@ DATAFILES OVER 2 GB - WARNING - This version can read and write datafiles of
     last one which is complete is found again.  After a crash, the last
     complete commit is found in either mode.
 
+POWER CUTS AND SEVERAL WRITERS - CHANGED - Details in doc/safety.md and CHANGES.
+    Commits now survive a power cut: a commit forces its data to the disk before
+    the last bytes which make it visible are written, and those after (fsync,
+    F_FULLFSYNC on macOS, FlushFileBuffers on Windows).  The file format is the
+    same, older programs read the files.  It costs two forced writes per commit
+    (8 ms instead of 0.014 ms for a small change, on one machine tried): for
+    loading a lot of data with many commits, set the environment variable
+    METAKIT_NOSYNC (to anything but empty or 0) to turn it off.
+
+    A datafile which is open for writing is now locked: a second writer, in the
+    same program or another one, does not get in (c4_Storage's strategy is not
+    valid and its _failure is c4_Strategy::kFailLocked; mk::file open fails with
+    the error code {MK LOCKED}).  Readers are not affected, and the lock goes when
+    the program ends, however it ends.  Before, both writers were told that their
+    commits had worked, and one replaced the other's.  To get the old behaviour
+    back for a program which needs it: c4_Storage(file, mode, false) in C++, the
+    option -nolock of mk::file open in Tcl, or the environment variable
+    METAKIT_NOLOCK (anything but empty or 0, for every program).  Without the
+    lock, a commit is refused (kFailChanged, {MK CHANGED}, nothing written) if
+    someone else has committed since the file was read.
+
+    THE LIMIT: writers take turns, they are not merged: a commit replaces the
+    state of the whole file, so two writers at the same time cannot both be
+    right.  A writer which finds the file taken has to wait and try again.  In
+    Tcl, mk::transaction does that (for a view people, which has name and age):
+
+        mk::transaction db test.dat {
+            mk::row append db.people name John age 43
+        }
+
+    It opens the datafile for writing (waiting up to 50 times 100 ms by default:
+    -retry and -delay), runs the script with the datafile known as db, commits,
+    and closes it, which lets go of the lock.  Nothing is committed if the script
+    fails.  The lock is advisory (programs without it are not kept out), it has
+    not been tried on network file systems, and the Windows and macOS parts have
+    not been run.
+
 ACKNOWLEDGEMENTS - Thanks to everyone who has helped shape and extend Metakit,
     including Kyrill Denisenko, Mark Roseman, Gordon McMillan, Matt Newman,
     Christian Tismer, John Bushakra, Steve Landers, Jacob Levy, John Barnard,

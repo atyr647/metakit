@@ -417,7 +417,8 @@ is to introduce some subviews)</li>
 
 <li>
 Concurrent file updates are currently impossible due to cache coherence
-issues (solution: client/server or diff's)</li>
+issues (solution: client/server or diff's).  Writers now lock the file and take
+turns, see safety.md</li>
 
 <li>
 Data items straddling a 4 Kb page boundary get read in, instead of taking

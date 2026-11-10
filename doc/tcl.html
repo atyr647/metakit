@@ -153,7 +153,7 @@ Show a list of all people with first name 'John':
 <P><DT><A name="mk_file"><HR size=1></A><H2>mk::file</H2><DD><H3>Opening, closing, and saving datafiles</H3>
 <P><DT>SYNOPSIS<DD><B>mk::file</B> &nbsp;<B>open</B> <BR>
 <B>mk::file</B> &nbsp;<B>open</B> &nbsp;<I>tag</I> <BR>
-<B>mk::file</B> &nbsp;<B>open</B> &nbsp;<I>tag</I> &nbsp;<I>filename</I> &nbsp;?-readonly? &nbsp;?-nocommit? &nbsp;?-extend? &nbsp;?-shared? &nbsp;<BR>
+<B>mk::file</B> &nbsp;<B>open</B> &nbsp;<I>tag</I> &nbsp;<I>filename</I> &nbsp;?-readonly? &nbsp;?-nocommit? &nbsp;?-extend? &nbsp;?-shared? &nbsp;?-nolock? &nbsp;<BR>
 <B>mk::file</B> &nbsp;<B>views</B> &nbsp;<I>tag</I> &nbsp;<BR>
 <B>mk::file</B> &nbsp;<B>close</B> &nbsp;<I>tag</I> &nbsp;<BR>
 <B>mk::file</B> &nbsp;<B>commit</B> &nbsp;<I>tag</I> &nbsp;?-full? &nbsp;<BR>
@@ -180,7 +180,22 @@ Show a list of all people with first name 'John':
     explicit commit will save changes.  To open a file only for reading,
     use the <B>-readonly</B> option.
     Datafiles can be opened read-only by any number
-    of readers, or by a single writer (no other combinations are allowed).
+    of readers, or by a single writer.  A datafile which is open for writing
+    is locked (for as long as it is open, and the system lets go of the lock
+    when the program ends, however it ends): a second writer, in this or
+    another program, does not get in, and <I>mk::file open</I> fails with the
+    error code <B>MK LOCKED</B>.  Readers are not affected.  Use
+    <I>mk::transaction</I> (below) to wait for your turn.  The <B>-nolock</B>
+    option, or the environment variable <B>METAKIT_NOLOCK</B> (set to anything
+    but empty or 0), opens for writing without the lock, as it used to be.  The
+    lock is advisory, so a program without it is not kept out.  Writers are not
+    merged, as a commit replaces the state of the whole file; without the lock,
+    a commit which finds that someone else has committed since this datafile
+    was opened is refused (error code <B>MK CHANGED</B>, nothing is written and
+    nothing is lost), see <I>rollback</I>.  Every commit forces its data to the
+    disk (twice, which takes time): the environment variable
+    <B>METAKIT_NOSYNC</B> (anything but empty or 0) turns that off, which is
+    what to do for loading a lot of data with many commits.
     There is an additional mode, specified by the <B>-extend</B> option: in this
     case changes are always written at the end of the datafile.  This allows
     modifications by one writer without affecting readers.  Readers can adjust
@@ -233,7 +248,23 @@ Show a list of all people with first name 'John':
     you now want to change this setting (there is no way to return to
     <I>-nocommit</I>, although a rollback has a similar effect).
 <P>
+<P>
+    The '<B>mk::transaction</B> <I>tag filename</I> ?-retry <I>n</I>? ?-delay <I>ms</I>? <I>script</I>'
+    command changes a datafile as one step in the way which keeps writers apart:
+    it opens the datafile for writing (waiting for its turn, up to
+    <I>n</I> retries, 50 if not given, <I>ms</I> milliseconds apart, 100 if not
+    given, and failing with the error code <B>MK LOCKED</B> after that), so what
+    it sees is what has been committed by then, evaluates <I>script</I> (in which
+    the datafile is known by <I>tag</I>), commits, and closes the datafile, which
+    lets go of the lock.  If the script fails, nothing is committed, and the
+    error is passed on.  The result is that of the script.
 <P><DT>EXAMPLES<DD>
+    Add a row, even though other programs do the same:
+    <PRE>
+    mk::transaction db test.dat {
+        mk::row append db.people name John age 43
+    }</PRE>
+
     Open a datafile (create it if necessary), for read-write access:
     <PRE>
     mk::file open db test.dat</PRE>
