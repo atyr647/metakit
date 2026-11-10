@@ -14,6 +14,9 @@ test 0 {} {
 
 testConstraint unix [expr {$tcl_platform(platform) eq "unix"}]
 
+# (these are about the lock, which a setting in the environment would turn off)
+catch {unset env(METAKIT_NOLOCK)}
+
 set f lock1.dat
 
 # a datafile of ten rows

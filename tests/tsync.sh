@@ -22,6 +22,7 @@ fi
 [ -x ./tsync ] || { echo "tsync.sh: no tsync program in $BUILD"; exit 1; }
 
 export LD_LIBRARY_PATH=.
+unset METAKIT_NOSYNC METAKIT_NOLOCK
 fail() { echo "FAILED: $*"; exit 1; }
 
 # the calls of a run, one line per call: marker, write <length>, fsync <fd>

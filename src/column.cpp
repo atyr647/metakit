@@ -172,8 +172,10 @@ bool c4_Column::IsMapped()const {
 }
 
 bool c4_Column::UsesMap(const t4_byte *ptr_)const {
-  // the most common falsifying case is checked first
+  // the most common falsifying case is checked first, and a strategy which
+  // does not map has no size of mapped data, only what a base offset left it
   return _persist != 0 &&
+    Strategy()._mapStart != 0 &&
     ptr_ >= Strategy()._mapStart &&
     Strategy()._dataSize != 0 &&
     ptr_ < Strategy()._mapStart + Strategy()._dataSize;

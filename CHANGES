@@ -1,3 +1,18 @@
+2026-11-10    Bug fixed: a datafile behind other data was damaged in memory without mmap
+
+    A datafile which is added behind something else (a starkit's runtime, or any
+    file which is not a datafile), and is not memory-mapped (a build without
+    mmap, a datafile too large for the address space, or a strategy of your own),
+    was read past the end of its buffers when changed after the first commit:
+    c4_Column::UsesMap took every buffer of the column to be in the mapped
+    file, because the strategy had a base offset and no map (a size of mapped
+    data of minus the offset, from a null pointer).  It copied 4096 bytes from
+    buffers which are smaller, and did not free them.  Found by AddressSanitizer
+    in tests/tcrash.cpp, and reproduced with NO_MMAP on the version before it
+    (a 5000-byte file of other data, a datafile added, committed, changed,
+    committed again).  Fixed by looking at whether there is a map at all.
+    tests/sanitize.sh now runs tcrash and tlock too.
+
 2026-11-10    Writers lock the datafile; a commit which would replace another is refused
 
     Two programs (or two handles) which had a datafile open for writing lost

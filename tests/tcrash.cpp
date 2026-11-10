@@ -44,6 +44,12 @@ enum {
   kSector = 512 // writes reach the disk in parts of this size, in any order
 };
 
+// memcpy which does not mind being asked for nothing, from nowhere
+static void Copy(void *to_, const void *from_, size_t n_) {
+  if (n_ > 0)
+    memcpy(to_, from_, n_);
+}
+
 struct Piece {
     t4_fpos _pos;
     int _len;
@@ -66,7 +72,7 @@ struct Image {
         memset(_p + _cap, 0, (size_t)(cap - _cap));
         _cap = cap;
       }
-      memcpy(_p + pos_, data_, len_);
+      Copy(_p + pos_, data_, len_);
       if (pos_ + len_ > _size)
         _size = pos_ + len_;
     }
@@ -78,7 +84,8 @@ struct Image {
         _cap = other_._size + 1024;
         _p = (t4_byte*)calloc(1, (size_t)_cap);
       } else
-        memset(_p, 0, (size_t)_cap);
+        if (_cap > 0)
+          memset(_p, 0, (size_t)_cap);
       if (other_._size > 0)
         Put(0, other_._p, (int)other_._size);
       _size = other_._size;
@@ -124,7 +131,7 @@ class PowerFile: public c4_Strategy {
         return  - 1;
       if (pos_ + len_ > _cur._size)
         len_ = pos_ >= _cur._size ? 0: (int)(_cur._size - pos_);
-      memcpy(buf_, _cur._p + pos_, len_);
+      Copy(buf_, _cur._p + pos_, len_);
       return len_;
     }
 
@@ -200,7 +207,7 @@ class DiskImage: public c4_Strategy {
         return  - 1;
       if (pos_ + len_ > _img._size)
         len_ = pos_ >= _img._size ? 0: (int)(_img._size - pos_);
-      memcpy(buf_, _img._p + pos_, len_);
+      Copy(buf_, _img._p + pos_, len_);
       return len_;
     }
 };
@@ -400,7 +407,7 @@ struct Disk {
       _dur.Assign(dur_);
       free(_pend);
       _pend = (Piece*)malloc((npend_ + room_ + 1) * sizeof(Piece));
-      memcpy(_pend, pend_, npend_ * sizeof(Piece));
+      Copy(_pend, pend_, npend_ * sizeof(Piece));
       _npend = npend_;
     }
 
@@ -482,7 +489,7 @@ static Totals Run(int mode_, bool wide_, unsigned policy_, int pad_ = 0) {
     pf._dur.Assign(d1._dur);
     free(pf._pend);
     pf._pend = (Piece*)malloc((d1._npend + 1) * sizeof(Piece));
-    memcpy(pf._pend, d1._pend, d1._npend * sizeof(Piece));
+    Copy(pf._pend, d1._pend, d1._npend * sizeof(Piece));
     pf._npend = d1._npend;
 
     // a program which was started again, now and then
@@ -501,8 +508,44 @@ static Totals Run(int mode_, bool wide_, unsigned policy_, int pad_ = 0) {
   return t;
 }
 
+// A datafile which is added behind something else, in a strategy which does not
+// memory-map (as is the case without mmap, and for a datafile too large for
+// the address space), has a base offset and no mapped data.  A column was
+// then taken to be in the mapped file, whatever its buffer.  This is not
+// seen without a sanitizer, see tests/sanitize.sh.
+static void TestBehindOther() {
+  printf("a datafile behind other data, without a memory map\n");
+
+  PowerFile pf;
+  t4_byte other[5000];
+  memset(other, 'x', sizeof other);
+  pf._cur.Put(0, other, sizeof other);
+  pf._dur.Put(0, other, sizeof other);
+
+  c4_IntProp pi("i");
+  {
+    c4_Storage s(pf, false, 1);
+    c4_View v = s.GetAs("a[i:I]");
+    for (int i = 0; i < 3000; ++i)
+      v.Add(pi[i]);
+    CHECK(s.Commit());
+    v.Add(pi[1]);
+    pi(v[5]) = 77;
+    CHECK(s.Commit());
+  }
+
+  DiskImage di(pf._cur);
+  c4_Storage s(di, false, 0);
+  c4_View v = s.View("a");
+  CHECK(v.GetSize() == 3001);
+  CHECK(v.GetSize() > 5 && pi(v[5]) == 77);
+  CHECK(v.GetSize() > 3000 && pi(v[3000]) == 1);
+}
+
 int main(int argc, char **argv) {
   const bool explore = argc > 1;
+
+  TestBehindOther();
 
   printf("power cut model, data forced to disk before and after the commit "
     "tail\n");

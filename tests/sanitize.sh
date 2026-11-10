@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build the library and the tests with AddressSanitizer and
-# UndefinedBehaviorSanitizer and run them: regress, twide and, when given as
-# the last argument, the randomized tests (tfuzz).
+# UndefinedBehaviorSanitizer and run them: regress, twide, tcrash, tlock and,
+# when given as the last argument, the randomized tests (tfuzz).
 #
 # Usage: tests/sanitize.sh [workdir] [tfuzz]
 #
@@ -18,7 +18,7 @@ cd "$WORK"
 SAN="-fsanitize=address,undefined"
 CXXFLAGS="-g -O1 -fno-omit-frame-pointer $SAN" LDFLAGS="$SAN" \
   "$ROOT/unix/configure" > /dev/null 2>&1
-TARGETS="libmk4.so regress twide"
+TARGETS="libmk4.so regress twide tcrash tlock"
 [ "$2" = tfuzz ] && TARGETS="$TARGETS tfuzz"
 make -j4 $TARGETS > build.log 2>&1 || { tail build.log; exit 1; }
 
@@ -48,5 +48,7 @@ run() {
 run regress ./regress
 diff -r "$ROOT/tests/ok" tests > /dev/null || { echo "output differs"; exit 1; }
 run twide ./twide
+run tcrash ./tcrash
+run tlock ./tlock
 [ "$2" = tfuzz ] && run tfuzz ./tfuzz
 echo "== all clean"
