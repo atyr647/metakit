@@ -37,7 +37,7 @@ Run "compile library" cl @flags /c @libSrc
 Run "make library" lib /nologo /OUT:mk4.lib @libObj
 
 # the programs which are one file
-foreach ($t in "twide", "tfuzz", "tcorrupt", "tcrash", "tlarge") {
+foreach ($t in "twide", "tfuzz", "tcorrupt", "tcrash", "tlock", "tlarge") {
   Run "build $t" cl @flags "$root\tests\$t.cpp" /Fe:$t.exe /link mk4.lib
 }
 
@@ -61,6 +61,7 @@ Run "twide" .\twide.exe
 Run "tfuzz" .\tfuzz.exe
 Run "tcorrupt" .\tcorrupt.exe
 Run "tcrash" .\tcrash.exe
+Run "tlock" .\tlock.exe
 
 if ($LargeArgs -ne "") {
   $largeList = @($LargeArgs -split " ")

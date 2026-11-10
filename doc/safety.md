@@ -154,3 +154,87 @@ has not been tried, nor has a disk which lies about forcing data. The macOS and
 Windows calls were not run (the Windows branch was not even compiled, there was
 no compiler for it): on Linux, `F_FULLFSYNC` was only tried as a made-up
 constant to see that the fallback to `fsync` works.
+
+# More than one writer
+
+## What was wrong
+
+Metakit has no locking. Two programs (or two handles in one program) which had a
+datafile open for writing each worked on their own picture of it. Each commit
+reported success, and the second one wrote over the blocks of the first. Tried
+on the version before this one (Tcl, two handles, 10 rows, each adds 4 and
+commits): both commits said yes, the file had 14 rows, and the four new ones
+read back as 5, 0, 6 and 0: neither writer's values.
+
+## What can and cannot be made right
+
+A datafile is one file which is memory-mapped, and a commit replaces the state of
+the whole file. **Two writers working at the same time cannot be merged**: there
+is nothing to merge them with, a commit is "this is the new state of everything".
+What can be made right is that writers take turns (each one starting from what
+the one before it committed), and that a writer which was not told to wait is
+refused rather than allowed to overwrite. Nothing here merges anything.
+
+## What happens now
+
+1. **The lock.** A datafile which is opened for writing (mode 1, or 2 for
+   extend mode) is locked, exclusively, for as long as it is open (`flock` on
+   Linux and the other Unixes, `LockFileEx` on Windows). A second writer does not
+   open it: `c4_Storage::Strategy().IsValid()` is false and `Strategy()._failure`
+   is `c4_Strategy::kFailLocked`; in Tcl `mk::file open` fails with error code
+   `MK LOCKED` and a message which says so. This is also so for a second writer in
+   the same program, which was the case which silently lost data.
+   Readers (mode 0) do not ask for a lock and do not mind one. The lock is
+   advisory: a program which does not ask for it (an older Metakit) is not kept
+   out, and does not keep anyone out. The system lets go of the lock when the
+   program ends, however it ends (the test kills a writer with `kill -9`): there
+   is no lock file to go stale. A child made with `fork` and not `exec` shares the
+   open file and with it the lock, so the lock stays as long as the child does.
+2. **The escape hatch.** `c4_Storage(file, mode, false)` in C++, `-nolock` in
+   `mk::file open`, and the environment variable `METAKIT_NOLOCK` (set to
+   anything but empty or 0, which works for every program, Python included) open
+   for writing without the lock, as before.
+3. **A commit which would replace another is refused.** The size of the file is
+   noted when it is read or written, together with its first 8 bytes (the
+   header) and its last 24 (the tails of the last commit). A commit which has
+   something to write first looks at these again. If they are not the same,
+   somebody else has committed in the meantime, and nothing is written:
+   `Commit` returns false, `_failure` is `kFailChanged`, and in Tcl the error code is
+   `MK CHANGED`. Nothing of the other program's work is lost, and nothing of
+   this one's is written; `Rollback` loads what is there, the changes can be made
+   again. A commit with nothing to write is not refused.
+4. **mk::transaction** (Tcl, see the README) does the whole cycle: take the lock
+   (by opening for writing, so it also reads what has been committed by then),
+   run a script, commit, let go; and it waits and tries again if the file is
+   locked.
+
+## What it does not do
+
+- Writers do not merge, and one which is not waiting is refused: the program has
+  to try again.
+- The check in 3 can miss a change: two commits in place by someone else, which
+  leave the size and the ends of the file as they were, are not seen. It is a
+  safety net for programs which left the lock out or run on a file system without
+  locks, not a replacement for the lock. (In one try, with a second handle which
+  made two such commits, the commit of the first one was not refused and nothing
+  showed as lost, because Metakit reads the parts of the file which it has not
+  changed straight from the file; I did not find out how far that goes.)
+- `flock` on a network file system may not work, or may work only between
+  programs on the same machine; where it cannot lock at all, nothing is locked
+  (only a lock held by somebody else is an error). Not tried here.
+- The lock on Windows has not been run, nor compiled (no compiler for it here).
+
+## How this was checked
+
+- `tests/tlock.cpp` (run by `make test`): a second writer is refused, also in the
+  same program and with a new file; readers are not; the lock goes with the
+  close; the three ways to leave it out; a commit which would replace another is
+  refused, in both modes, for added rows, for changes in place, for a new file,
+  and refused again; a writer which has nothing to commit is not; a writer which
+  is killed with `kill -9` leaves nothing behind; three programs which take
+  turns, 20 commits each, lose none of their 60 rows; two programs without the
+  lock, one is refused and the other's rows are there. Without the lock code, or
+  without the check in 3, it fails.
+- `tcl/tests/lock.test`: the same through Tcl, and `mk::transaction`: results,
+  failures which commit nothing, waiting for a program which holds the file,
+  giving up with a code, and three Tcl programs which take turns.

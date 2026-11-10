@@ -1,0 +1,242 @@
+#!/usr/bin/env tclsh
+# %renumber<^\s*test >%
+
+source [file join [file dir [info script]] initests.tcl]
+
+test 0 {} {
+  package require Mk4tcl
+} $version
+
+# A datafile which is open for writing is locked, so that two programs (or
+# two handles in one program) do not replace each other's commits.  Readers are
+# not affected.  mk::transaction takes the lock, reads, changes, commits and lets
+# go of the lock, and waits if somebody else has it.
+
+testConstraint unix [expr {$tcl_platform(platform) eq "unix"}]
+
+set f lock1.dat
+
+# a datafile of ten rows
+proc fresh {} {
+  global f
+  file delete $f
+  mk::file open db $f
+  mk::view layout db.a i:I
+  for {set i 0} {$i < 10} {incr i} {
+    mk::row append db.a i $i
+  }
+  mk::file close db
+}
+
+# the number of rows, as a reader sees it
+proc rows {} {
+  global f
+  mk::file open rd $f -readonly
+  set n [mk::view size rd.a]
+  mk::file close rd
+  return $n
+}
+
+# a program which does something with the datafile, see its script below
+proc child {args} {
+  global workdir
+  set cmd [list [info nameofexecutable] lockchild.tcl $workdir]
+  return [open "|$cmd $args" r+]
+}
+set workdir [pwd]
+set fd [open lockchild.tcl w]
+puts $fd {
+  lappend auto_path [lindex $argv 0]
+  package require Mk4tcl
+  lassign $argv - what file arg1 arg2
+  switch $what {
+    hold {
+      # open for writing, say so, and stay as long as asked (or until the
+      # parent closes its end, or is killed: stdin is at the end then)
+      mk::file open h $file
+      puts ready
+      flush stdout
+      if {$arg1 ne ""} then {after $arg1} else {gets stdin}
+      mk::file close h
+    }
+    turns {
+      for {set i 0} {$i < $arg2} {incr i} {
+        mk::transaction t $file {
+          mk::row append t.a i [expr {$arg1 * 1000 + $i}]
+        }
+      }
+    }
+  }
+}
+close $fd
+
+test 1 {a second writer is refused, with a code which says why} -body {
+  fresh
+  mk::file open a $f
+  set r [catch {mk::file open b $f} msg]
+  set code $::errorCode
+  mk::file close a
+  list $r $code [string match {*locked by another writer*} $msg]
+} -result {1 {MK LOCKED} 1}
+
+test 2 {readers are not affected, and see what is committed} -body {
+  fresh
+  mk::file open a $f
+  mk::row append a.a i 100
+  mk::file commit a
+  mk::file open rd $f -readonly
+  set n [mk::view size rd.a]
+  mk::file close rd
+  mk::file close a
+  set n
+} -result 11
+
+test 3 {the lock goes when the file is closed} -body {
+  fresh
+  mk::file open a $f
+  mk::file close a
+  mk::file open b $f
+  mk::row append b.a i 100
+  mk::file close b
+  rows
+} -result 11
+
+test 4 {the lock can be left out: -nolock, and METAKIT_NOLOCK} -body {
+  fresh
+  mk::file open a $f
+  mk::file open b $f -nolock
+  mk::file close b
+  set env(METAKIT_NOLOCK) 1
+  mk::file open c $f
+  mk::file close c
+  set env(METAKIT_NOLOCK) 0
+  set r [catch {mk::file open d $f}]
+  unset env(METAKIT_NOLOCK)
+  mk::file close a
+  set r
+} -result 1
+
+test 5 {without the lock, a commit which replaces another is refused} -body {
+  fresh
+  mk::file open a $f -nolock
+  mk::file open b $f -nolock
+  mk::row append a.a i 100
+  mk::row append a.a i 101
+  mk::row append a.a i 102
+  mk::file commit a
+  mk::row append b.a i 200
+  set r [catch {mk::file commit b} msg]
+  set code $::errorCode
+  # what a did is still there
+  set n [rows]
+  # b can load it, and do again what it did
+  mk::file rollback b
+  mk::row append b.a i 200
+  mk::file commit b
+  mk::file close b
+  mk::file close a -nocommit
+  list $r $code $n [rows]
+} -result {1 {MK CHANGED} 13 14}
+
+test 6 {mk::transaction: the result, and the commit} -body {
+  fresh
+  set r [mk::transaction t $f {
+    mk::row append t.a i 100
+    mk::view size t.a
+  }]
+  list $r [rows] [catch {mk::file close t}]
+} -result {11 11 1}
+
+test 7 {mk::transaction: nothing is committed if the script fails} -body {
+  fresh
+  set r [catch {mk::transaction t $f {
+    mk::row append t.a i 100
+    error "no good" 
+  }} msg]
+  list $r $msg [rows] [catch {mk::file close t}]
+} -result {1 {no good} 10 1}
+
+test 8 {mk::transaction: other results of the script go through} -body {
+  fresh
+  set l {}
+  foreach i {1 2 3} {
+    mk::transaction t $f {
+      if {$i == 2} continue
+      lappend l $i
+    }
+  }
+  list $l [rows]
+} -result {{1 3} 10}
+
+test 9 {mk::transaction: the lock is let go of, so it can be done again} -body {
+  fresh
+  for {set i 0} {$i < 5} {incr i} {
+    mk::transaction t $f {mk::row append t.a i $i}
+  }
+  rows
+} -result 15
+
+test 10 {mk::transaction: gives up if it is not let in, with a code} -body {
+  fresh
+  mk::file open a $f
+  set r [catch {mk::transaction t $f -retry 2 -delay 10 {
+    mk::row append t.a i 100
+  }} msg]
+  set code $::errorCode
+  mk::file close a
+  list $r $code [rows]
+} -result {1 {MK LOCKED} 10}
+
+test 11 {mk::transaction: bad arguments} -body {
+  list [catch {mk::transaction t $f} m1] [catch {mk::transaction t $f -x 1 {}} m2]
+} -match glob -result {1 1}
+
+test 12 {mk::transaction waits for another program which has the datafile} -constraints unix -body {
+  fresh
+  set c [child hold $f 700]
+  gets $c line
+  set t [clock milliseconds]
+  mk::transaction t $f {mk::row append t.a i 100}
+  set waited [expr {[clock milliseconds] - $t}]
+  catch {close $c}
+  list $line [expr {$waited > 300}] [rows]
+} -result {ready 1 11}
+
+test 13 {a program which has the datafile is killed: the lock is let go of} -constraints unix -body {
+  fresh
+  set c [child hold $f]
+  gets $c line
+  set pid [pid $c]
+  set locked [catch {mk::file open b $f}]
+  exec kill -9 $pid
+  catch {close $c}
+  # no waiting, and no lock file to take away
+  mk::file open b $f
+  mk::row append b.a i 100
+  mk::file close b
+  list $line $locked [rows]
+} -result {ready 1 11}
+
+test 14 {three programs which take turns lose nothing} -constraints unix -body {
+  fresh
+  set cs {}
+  foreach who {1 2 3} {
+    lappend cs [child turns $f $who 15]
+  }
+  foreach c $cs {
+    set out [read $c]
+    if {[catch {close $c} msg]} {
+      return "child failed: $msg"
+    }
+  }
+  mk::file open rd $f -readonly
+  set sum 0
+  set n [mk::view size rd.a]
+  mk::loop c rd.a {incr sum [mk::get $c i]}
+  mk::file close rd
+  list $n $sum
+} -result [list 55 [expr {45 + 15 * (1000 + 2000 + 3000) + 3 * 105}]]
+
+file delete $f lockchild.tcl
+
+cleanupTests

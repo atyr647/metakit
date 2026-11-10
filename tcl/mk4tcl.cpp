@@ -106,6 +106,57 @@ int Mk_EvalObj(Tcl_Interp *ip_, Tcl_Obj *cmd_) {
 
 // moved out of member func scope to please HP-UX's aCC:
 
+static const char kChangedMessage[] = "the datafile was changed by another "
+  "program after it was opened, so nothing was committed (and nothing of what "
+  "the other program committed is lost): use mk::file rollback to load its "
+  "changes, giving up those made here, or mk::transaction, which does it all";
+
+// mk::transaction is made in Tcl, which is easier to see right than C++ is
+// for a loop which waits: open for writing (which takes the lock, and so
+// reads what is committed by then), run the script, commit, close (which
+// lets go of the lock).  Nothing is committed if the script fails.
+static const char kTransactionScript[] =
+  "namespace eval ::mk {}\n"
+  "proc ::mk::transaction {name file args} {\n"
+  "  if {[llength $args] % 2 == 0} {\n"
+  "    return -code error \"wrong # args: should be \\\"mk::transaction name "
+  "file ?-retry n? ?-delay ms? script\\\"\"\n"
+  "  }\n"
+  "  ::set retry 50\n"
+  "  ::set delay 100\n"
+  "  foreach {opt val} [lrange $args 0 end-1] {\n"
+  "    switch -- $opt {\n"
+  "      -retry {::set retry $val}\n"
+  "      -delay {::set delay $val}\n"
+  "      default {return -code error \"bad option \\\"$opt\\\": must be -delay or "
+  "-retry\"}\n"
+  "    }\n"
+  "  }\n"
+  "  ::set tries 0\n"
+  "  while {[catch {mk::file open $name $file -nocommit} msg]} {\n"
+  "    ::set ec $::errorCode\n"
+  "    if {[lrange $ec 0 1] ne {MK LOCKED} || $tries >= $retry} {\n"
+  "      return -code error -errorcode $ec $msg\n"
+  "    }\n"
+  "    incr tries\n"
+  "    after [expr {$delay + int(rand() * $delay / 2)}]\n"
+  "  }\n"
+  "  ::set code [catch {uplevel 1 [lindex $args end]} result]\n"
+  "  if {$code == 0 && [catch {mk::file commit $name} cres]} {\n"
+  "    ::set code 1\n"
+  "    ::set result $cres\n"
+  "  }\n"
+  "  if {$code == 1} {\n"
+  "    ::set info $::errorInfo\n"
+  "    ::set ec $::errorCode\n"
+  "  }\n"
+  "  catch {mk::file close $name}\n"
+  "  if {$code == 1} {\n"
+  "    return -code error -errorinfo $info -errorcode $ec $result\n"
+  "  }\n"
+  "  return -code $code $result\n"
+  "}\n";
+
 static const char *getCmds[] =  {
   "-size", 0
 };
@@ -718,14 +769,16 @@ int MkPath::Refs(int diff_) {
 c4_PtrArray *MkWorkspace::Item::_shared = 0;
 
 MkWorkspace::Item::Item(const char *name_, const char *fileName_, int mode_,
-  c4_PtrArray &items_, int index_, bool share_): _name(name_), _fileName
-  (fileName_), _items(items_), _index(index_) {
+  c4_PtrArray &items_, int index_, bool share_, bool lock_): _name(name_),
+  _fileName(fileName_), _items(items_), _index(index_), _openFailure(0) {
   ++generation; // make sure all cached paths refresh on next access
 
   if (*fileName_) {
-    c4_Storage s(fileName_, mode_);
-    if (!s.Strategy().IsValid())
+    c4_Storage s(fileName_, mode_, lock_);
+    if (!s.Strategy().IsValid()) {
+      _openFailure = s.Strategy()._failure;
       return ;
+    }
     _storage = s;
   }
 
@@ -783,7 +836,8 @@ void MkWorkspace::Item::ForceRefresh() {
   ++generation; // make sure all cached paths refresh on next access
 }
 
-MkWorkspace::MkWorkspace(Tcl_Interp *ip_): _interp(ip_), _chanList(0) {
+MkWorkspace::MkWorkspace(Tcl_Interp *ip_): _interp(ip_), _chanList(0),
+  _openFailure(0) {
   new Item("", "", 0, _items, 0);
 
   // never uses entry zero (so atoi failure in ForgetPath is harmless)
@@ -810,8 +864,9 @@ void MkWorkspace::DefCmd(MkTcl *cmd_) {
 }
 
 MkWorkspace::Item *MkWorkspace::Define(const char *name_, const char *fileName_,
-  int mode_, bool share_) {
+  int mode_, bool share_, bool lock_) {
   Item *ip = Find(name_);
+  _openFailure = 0;
 
   if (ip == 0) {
     int n =  - 1;
@@ -819,8 +874,9 @@ MkWorkspace::Item *MkWorkspace::Define(const char *name_, const char *fileName_,
       if (Nth(n) == 0)
         break;
 
-    ip = new Item(name_, fileName_, mode_, _items, n, share_);
+    ip = new Item(name_, fileName_, mode_, _items, n, share_, lock_);
     if (*fileName_ != 0 && !ip->_storage.Strategy().IsValid()) {
+      _openFailure = ip->_openFailure;
       delete ip;
       return 0;
     }
@@ -1821,9 +1877,9 @@ int MkTcl::FileCmd() {
           return Fail("file already open");
 
         int mode = 1;
-        bool nocommit = false, shared = false;
+        bool nocommit = false, shared = false, lock = true;
         static const char *options[] =  {
-          "-readonly", "-extend", "-nocommit", "-shared", 0
+          "-readonly", "-extend", "-nocommit", "-shared", "-nolock", 0
         }
         ;
 
@@ -1841,6 +1897,9 @@ int MkTcl::FileCmd() {
         case 3:
           shared = true;
           break;
+        case 4:
+          lock = false;
+          break;
         default:
           return _error;
         }
@@ -1849,15 +1908,22 @@ int MkTcl::FileCmd() {
         int len = 0;
         const char *file = objc < 4 ? "": Tcl_GetStringFromObj(objv[3], &len);
 #ifdef WIN32
-        np = work.Define(name, file, mode, shared);
+        np = work.Define(name, file, mode, shared, lock);
 #else 
         Tcl_DString ds;
         const char *native = Tcl_UtfToExternalDString(NULL, file, len, &ds);
-        np = work.Define(name, native, mode, shared);
+        np = work.Define(name, native, mode, shared, lock);
         Tcl_DStringFree(&ds);
 #endif 
-        if (np == 0)
-          return Fail("file open failed");
+        if (np == 0) {
+          if (work._openFailure != c4_Strategy::kFailLocked)
+            return Fail("file open failed");
+
+          Fail("datafile is locked by another writer (mk::transaction waits for "
+            "its turn, -nolock does without the lock)");
+          Tcl_SetErrorCode(interp, "MK", "LOCKED", (char*)0);
+          return _error;
+        }
 
         if (*file && mode != 0 && !nocommit)
           np->_storage.AutoCommit();
@@ -1898,15 +1964,24 @@ int MkTcl::FileCmd() {
         // last commit without a word.  It is done here, and a failure is an
         // error, after the datafile has been closed all the same.
         bool committed = true;
+        bool changed = false;
         if (np->_storage.Strategy().IsValid() && np->_storage.AutoCommit
           (false)) {
           np->ForceRefresh(); // detach first
           committed = np->_storage.Commit(false);
+          changed = np->_storage.Strategy()._failure == c4_Strategy::
+            kFailChanged;
         }
         delete np;
-        if (!committed)
+        if (!committed) {
+          if (changed) {
+            Fail(kChangedMessage);
+            Tcl_SetErrorCode(interp, "MK", "CHANGED", (char*)0);
+            return _error;
+          }
           return Fail("commit failed while closing the datafile: the changes"
             " made since the last commit are lost");
+        }
       }
       break;
 
@@ -1920,8 +1995,14 @@ int MkTcl::FileCmd() {
         // 1-Mar-1999: check commit success
         bool full = objc > 3 && strcmp(Tcl_GetStringFromObj(objv[3], 0), 
           "-full") == 0;
-        if (!np->_storage.Commit(full))
-          return Fail("I/O error during commit");
+        if (!np->_storage.Commit(full)) {
+          if (np->_storage.Strategy()._failure != c4_Strategy::kFailChanged)
+            return Fail("I/O error during commit");
+
+          Fail(kChangedMessage);
+          Tcl_SetErrorCode(interp, "MK", "CHANGED", (char*)0);
+          return _error;
+        }
       }
       break;
 
@@ -2654,6 +2735,9 @@ static int Mktcl_Cmds(Tcl_Interp *interp, bool /*safe*/) {
 
   for (int i = 0; cmds[i]; ++i)
     ws->DefCmd(new MkTcl(ws, interp, i, prefix + cmds[i]));
+
+  if (Tcl_Eval(interp, kTransactionScript) != TCL_OK)
+    return TCL_ERROR;
 
   return Tcl_PkgProvide(interp, "Mk4tcl", "2.4.9.7");
 }

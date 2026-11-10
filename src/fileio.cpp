@@ -43,6 +43,7 @@
 #if q4_UNIX
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #endif 
 
 #if q4_WINCE
@@ -233,6 +234,33 @@ static bool f4_NoSync() {
   return e != 0 && *e != 0 && strcmp(e, "0") != 0;
 }
 
+// Setting this one turns the lock which keeps writers apart off, for programs
+// which depend on being able to open a datafile for writing more than once.
+static bool f4_NoLock() {
+  const char *e = getenv("METAKIT_NOLOCK");
+  return e != 0 && *e != 0 && strcmp(e, "0") != 0;
+}
+
+// Read from the file itself, which stdio may not: it can answer from what it
+// has kept of the file, which is not what another program has made of it since.
+static int f4_RawRead(FILE *file_, t4_fpos pos_, void *buf_, int len_) {
+#if q4_WIN32 && !q4_WINCE
+  OVERLAPPED ov;
+  memset(&ov, 0, sizeof ov);
+  ov.Offset = (DWORD)(pos_ &0xFFFFFFFF);
+#if q4_FPOS64
+  ov.OffsetHigh = (DWORD)(pos_ >> 32);
+#endif 
+  DWORD n = 0;
+  return ReadFile((HANDLE)_get_osfhandle(_fileno(file_)), buf_, len_, &n, &ov) ?
+    (int)n:  - 1;
+#elif q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
+  return (int)pread(fileno(file_), buf_, len_, (off_t)pos_);
+#else 
+  return  - 1;
+#endif 
+}
+
 #if q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
 // a new file is only there after a power cut if its directory is on the disk
 static void f4_SyncDirectory(const char *fname_) {
@@ -299,7 +327,8 @@ bool c4_FileStream::Write(const void *buffer_, int length_) {
 /////////////////////////////////////////////////////////////////////////////
 // c4_FileStrategy
 
-c4_FileStrategy::c4_FileStrategy(FILE *file_): _file(file_), _cleanup(0) {
+c4_FileStrategy::c4_FileStrategy(FILE *file_): _lock(true), _file(file_),
+  _cleanup(0), _noteSize(0), _noted(false) {
   InitializeIO();
   ResetFileMapping();
 }
@@ -440,6 +469,8 @@ bool c4_FileStrategy::DataOpen(const char *fname_, int mode_) {
 #endif //q4_WIN32 && !q4_BORC && !q4_WINCE
 
   if (_file != 0) {
+    if (mode_ > 0 && !TakeLock())
+      return false;
     ResetFileMapping();
     return true;
   }
@@ -452,16 +483,22 @@ bool c4_FileStrategy::DataOpen(const char *fname_, int mode_) {
     if (fd !=  - 1)
       _cleanup = _file = _fdopen(fd, "w+b");
 #else 
-    _cleanup = _file = fopen(fname_, "w+b");
-#if q4_UNIX
+#if q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
+    // Not "w+b", which empties a file which another program has made in the
+    // meantime, before the lock could keep this one out.
+    const int fd = open(fname_, O_RDWR | O_CREAT, 0666);
+    _cleanup = _file = fd >= 0 ? fdopen(fd, "r+b"): 0;
     if (_file != 0) {
-      fcntl(fileno(_file), F_SETFD, FD_CLOEXEC);
-#if !(defined (q4_CARBON) && q4_CARBON)
+      fcntl(fd, F_SETFD, FD_CLOEXEC);
       f4_SyncDirectory(fname_);
-#endif 
     }
-#endif //q4_UNIX
+#else 
+    _cleanup = _file = fopen(fname_, "w+b");
+#endif 
 #endif //q4_WIN32 && !q4_BORC && !q4_WINCE
+
+    if (_file != 0 && !TakeLock())
+      return false;
   }
 
   //d4_assert(_file != 0);
@@ -550,6 +587,96 @@ void c4_FileStrategy::DataSync() {
     _failure = errno != 0 ? errno:  - 1;
     d4_assert(_failure != 0);
   }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  Two programs which write to a datafile at the same time lose each other's
+//  commits without a word.  A writer takes an exclusive lock on the file when
+//  it opens it, and holds it until the file is closed (or the program ends,
+//  however it ends: the system lets go of it).  Readers do not ask for one, so
+//  they are not in the way, and a writer is not in theirs.  The lock is
+//  advisory: a program which does not ask for it is not stopped.
+//
+//  On Unix this is flock, which is per open file, so a second writer in the
+//  same process is kept out as well.  On Windows it is LockFileEx, on one
+//  byte far beyond the end of any datafile, because Windows locks are not
+//  advisory and a lock on the first byte would be in the way of readers.
+//  A file system which cannot lock at all (say, some network ones) does
+//  not keep anyone out: only a lock which is held by someone else is an error.
+
+bool c4_FileStrategy::TakeLock() {
+  bool free = true;
+
+  if (_lock && !f4_NoLock()) {
+#if q4_WIN32 && !q4_WINCE
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = 0xFFFFFFFF;
+    ov.OffsetHigh = 0x7FFFFFFF;
+    free = LockFileEx((HANDLE)_get_osfhandle(_fileno(_file)),
+      LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov) != 0 ||
+      GetLastError() != ERROR_LOCK_VIOLATION;
+#elif q4_UNIX && !(defined (q4_CARBON) && q4_CARBON)
+    while (flock(fileno(_file), LOCK_EX | LOCK_NB) != 0) {
+      if (errno == EINTR)
+        continue;
+      free = errno != EWOULDBLOCK;
+      break;
+    }
+#endif 
+  }
+
+  if (!free) {
+    fclose(_cleanup);
+    _cleanup = _file = 0;
+    _failure = kFailLocked;
+  }
+  return free;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+//
+//  A program which has a datafile open for writing may find, when it commits,
+//  that another one has committed to it in the meantime (it was not kept out,
+//  see above).  Writing then would replace what the other program made with
+//  a version which does not have it.  So the size of the file is noted when it
+//  is read or written, with its first 8 bytes and its last 24, which hold the
+//  header and the tails of the last commit, and a commit does not go ahead if
+//  these are not as they were.  The commits of other programs are never lost
+//  this way, but not every one is noticed: a program which makes two commits
+//  which leave the ends as they were (changes in place, which swap between
+//  two places) cannot be seen.  The lock is what keeps writers apart.
+
+bool c4_FileStrategy::ReadEnds(t4_fpos &size_, t4_byte *ends_) {
+  if (_file == 0 || fflush(_file) < 0)
+    return false;
+
+  size_ = FileSize();
+  if (size_ < 0)
+    return false;
+
+  memset(ends_, 0, sizeof _noteEnds);
+  if (size_ >= _baseOffset + 8)
+    f4_RawRead(_file, _baseOffset, ends_, 8);
+  if (size_ >= 24)
+    f4_RawRead(_file, size_ - 24, ends_ + 8, 24);
+  return true;
+}
+
+void c4_FileStrategy::DataRemember() {
+  _noted = ReadEnds(_noteSize, _noteEnds);
+}
+
+bool c4_FileStrategy::DataChanged() {
+  t4_fpos size = 0;
+  t4_byte ends[sizeof _noteEnds];
+
+  // what cannot be looked at cannot be said to have changed
+  if (!_noted || !ReadEnds(size, ends))
+    return false;
+
+  return size != _noteSize || memcmp(ends, _noteEnds, sizeof ends) != 0;
 }
 
 /////////////////////////////////////////////////////////////////////////////

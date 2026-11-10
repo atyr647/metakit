@@ -844,6 +844,16 @@ void c4_SaveContext::SaveIt(c4_HandlerSeq &root_, c4_Allocator **spacePtr_,
 
   bool changed = _fullScan || tempWalk != rootWalk_;
 
+  // Another program has committed to this datafile since it was read, which a
+  // writer is kept from doing, unless it was told not to.  What is written now
+  // would replace those commits, so nothing is written, and nothing is lost.
+  if (changed && !_fullScan && _differ == 0 && _strategy.DataChanged()) {
+    _strategy._failure = c4_Strategy::kFailChanged;
+    if (restorable)
+      _space->Assign(spaceBackup);
+    return ;
+  }
+
   rootWalk_ = c4_Bytes(tempWalk.Contents(), tempWalk.Size(), true);
 
   _preflight = false;
@@ -1290,6 +1300,12 @@ bool c4_Persist::Commit(bool full_) {
 
   // 30-3-2001: moved down, fixes "crash every 2nd call of mkdemo/dbg"
   ar.SaveIt(*_root, &_space, _rootWalk);
+
+  // what the commit made of the file is not another program's doing, but if
+  // it was refused because of one, then that is still to be known
+  if ((full_ || _differ == 0) && _strategy._failure != c4_Strategy::kFailChanged)
+    _strategy.DataRemember();
+
   return _strategy._failure == 0;
 }
 
@@ -1364,9 +1380,12 @@ bool c4_Persist::LoadIt(c4_Column &walk_) {
 }
 
 void c4_Persist::LoadAll() {
+  // what the datafile is like now is what a commit is compared with later
   c4_Column walk(this);
-  if (!LoadIt(walk))
+  if (!LoadIt(walk)) {
+    _strategy.DataRemember();
     return ;
+  }
 
   if (_strategy._rootLen < 0) {
     _oldSeek = _strategy._rootPos;
@@ -1435,6 +1454,8 @@ void c4_Persist::LoadAll() {
       }
     }
   }
+
+  _strategy.DataRemember();
 }
 
 t4_i32 c4_Persist::FetchOldValue() {

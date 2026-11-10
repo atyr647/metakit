@@ -131,10 +131,11 @@ class MkWorkspace {
         c4_PtrArray _paths; // the paths associated with this entry
         c4_PtrArray &_items; // array from which this item is referenced
         int _index; // position in the _items array
+        int _openFailure; // why the file could not be opened, see c4_Strategy
 
         //Item ();        // special first entry initializer
         Item(const char *name_, const char *fileName_, int mode_, c4_PtrArray
-          &items_, int index_, bool share_ = false);
+          &items_, int index_, bool share_ = false, bool lock_ = true);
         ~Item();
 
         void ForceRefresh(); // bump the generation to recreate views
@@ -149,7 +150,9 @@ class MkWorkspace {
     void CleanupCommands();
 
     Item *Define(const char *name_, const char *fileName_, int mode_, bool
-      share_);
+      share_, bool lock_ = true);
+
+    int _openFailure; // why the last call of Define failed (zero: unknown)
 
     Item *Find(const char *name_)const;
     int NumItems()const;

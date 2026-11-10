@@ -590,8 +590,9 @@ class c4_Storage: public c4_View {
     c4_Storage();
     /// Construct a storage using the specified strategy handler
     c4_Storage(c4_Strategy &, bool = false, int = 1);
-    /// Construct a storage object, keeping the current structure
-    c4_Storage(const char *, int);
+    /// Construct a storage object, keeping the current structure.  A writer
+    /// (mode 1 or 2) takes the lock of the file unless the last argument is false.
+    c4_Storage(const char *, int, bool = true);
     /// Reconstruct a storage object from a suitable view
     c4_Storage(const c4_View &);
     /// Destructor, usually closes file, but does not commit by default
@@ -864,9 +865,21 @@ class c4_Strategy {
     virtual t4_i32 FreshGeneration();
     /// Force everything written so far to stable storage (default: nothing)
     virtual void DataSync();
+    /// Take note of what the datafile looks like now (default: nothing)
+    virtual void DataRemember();
+    /// True if it is not as it was when DataRemember was called (default: no)
+    virtual bool DataChanged();
 
     void SetBase(t4_fpos);
     t4_fpos EndOfData(t4_fpos =  - 1);
+
+    /// Values of _failure which are not an error code of the system
+    enum {
+      /// the datafile is in use by another writer, see c4_FileStrategy
+      kFailLocked =  - 3,
+      /// the datafile was changed by someone else since it was loaded
+      kFailChanged =  - 4
+    };
 
     /// True if the storage format is not native (default is false)
     bool _bytesFlipped;

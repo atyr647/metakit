@@ -1,3 +1,42 @@
+2026-11-10    Writers lock the datafile; a commit which would replace another is refused
+
+    Two programs (or two handles) which had a datafile open for writing lost
+    each other's commits without a word: both commits said they had worked, and
+    the file was left with blocks of both (on the version before this, two
+    handles each adding 4 rows to a file of 10: 14 rows, the 4 new ones with
+    values which neither had written).  A datafile which is opened for writing
+    is now locked, for as long as it is open: flock on Unix, LockFileEx on
+    Windows (on a byte far beyond the data, so that readers are not in the way).
+    A second writer does not open it: c4_Storage().Strategy().IsValid() is false
+    and Strategy()._failure is c4_Strategy::kFailLocked; mk::file open fails with
+    error code {MK LOCKED}.  Readers take no lock.  The system lets go of the
+    lock when the program ends, however (a writer killed with kill -9 leaves no
+    stale lock).  This is the new default; programs which depend on opening a
+    file for writing twice can use c4_Storage(file, mode, false), mk::file open
+    ... -nolock, or the environment variable METAKIT_NOLOCK (anything but empty
+    or 0).  The lock is advisory, and programs without it are not kept out.
+
+    Without the lock (as asked), a commit is now refused when somebody else has
+    committed since this one read the file: it compares the size of the file and
+    its first 8 and last 24 bytes with what it saw (c4_Strategy::DataRemember and
+    DataChanged), and writes nothing if they differ.  Commit returns false, the
+    failure is c4_Strategy::kFailChanged, mk::file commit fails with {MK CHANGED}.
+    Rollback loads what is there.  This cannot see every change (two commits in
+    place by someone else which leave the ends as they were): the lock is what
+    keeps writers apart.  Writers are not merged: a commit replaces the whole
+    state, so writers have to take turns.
+
+    New in Mk4tcl: mk::transaction name file ?-retry n? ?-delay ms? script, which
+    opens the file for writing (so it waits for its turn, and sees what has been
+    committed), runs the script, commits and closes, and commits nothing if the
+    script fails.
+
+    Also: a new datafile is created without emptying one which another program
+    made in the meantime (it was fopen "w+b", which would have been before the
+    lock could keep this one out).
+
+    Tests: tests/tlock.cpp (make test), tcl/tests/lock.test; see doc/safety.md.
+
 2026-11-10    Commits survive a power cut: data is forced to disk
 
     A commit only did fflush, which hands data to the operating system, and

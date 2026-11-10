@@ -196,8 +196,9 @@ c4_Storage::c4_Storage(c4_Strategy &strategy_, bool owned_, int mode_) {
   *(c4_View*)this = &pers->Root();
 }
 
-c4_Storage::c4_Storage(const char *fname_, int mode_) {
+c4_Storage::c4_Storage(const char *fname_, int mode_, bool lock_) {
   c4_FileStrategy *strat = d4_new c4_FileStrategy;
+  strat->_lock = lock_;
   strat->DataOpen(fname_, mode_);
 
   Initialize(*strat, true, mode_);
